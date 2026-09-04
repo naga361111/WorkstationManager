@@ -23,6 +23,17 @@ fn create_dir(path: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| e.to_string())
 }
 
+/// 경로 삭제(파일이면 파일, 폴더면 통째로). 프로젝트 스킬 폴더 삭제 등에 쓴다.
+#[tauri::command]
+fn delete_path(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if p.is_dir() {
+        fs::remove_dir_all(p).map_err(|e| e.to_string())
+    } else {
+        fs::remove_file(p).map_err(|e| e.to_string())
+    }
+}
+
 /// 폴더의 하위 항목 이름 목록(폴더/파일). 편집 패널의 스킬 목록 등에 쓴다.
 #[tauri::command]
 fn list_dir(path: &str) -> Result<Vec<String>, String> {
@@ -92,6 +103,21 @@ fn list_components() -> Result<Vec<Component>, String> {
 fn save_components(components: Vec<Component>) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&components).map_err(|e| e.to_string())?;
     fs::write(store_path("components.json")?, json).map_err(|e| e.to_string())
+}
+
+/// 스킬 = 이 앱이 가진 스킬 저장소(클로드 스킬 아님). 컴포넌트와 형태가 같아 Component를 재사용한다.
+#[tauri::command]
+fn list_skills() -> Result<Vec<Component>, String> {
+    match fs::read_to_string(store_path("skills.json")?) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        Err(_) => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn save_skills(skills: Vec<Component>) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&skills).map_err(|e| e.to_string())?;
+    fs::write(store_path("skills.json")?, json).map_err(|e| e.to_string())
 }
 
 // ── 메모리 가져오기 ──────────────────────────────────
@@ -190,6 +216,49 @@ fn claude_home() -> Result<String, String> {
     Ok(home_dir()?.join(".claude").to_string_lossy().replace('\\', "/"))
 }
 
+/// 메모리 인덱스 정리: 헤드리스 Claude Code를 메모리 폴더 안에서 돌려 MEMORY.md를 실제 파일에 맞춘다.
+/// 프롬프트는 stdin으로 넘겨 인용부호 문제를 피한다. Windows는 .cmd 셈을 위해 cmd /C 경유.
+// ponytail: claude가 PATH에 있어야 함(폴백 없음, 요청대로).
+// (async): 동기 커맨드는 메인 스레드에서 돌아 UI를 얼리므로, 블로킹 실행을 별도 스레드로 보낸다.
+#[tauri::command(async)]
+fn reconcile_memory(dir: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let prompt = "MEMORY.md 인덱스 파일을 이 폴더의 실제 메모리 .md 파일들에 정확히 맞게 수정하세요. \
+깨진 링크를 고치고, 인덱스에 없는 새 파일은 항목을 추가하고, 파일이 없어진 항목은 제거하세요. \
+오직 MEMORY.md만 편집하고, 다른 파일이나 이 폴더 밖은 절대 건드리지 마세요.";
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "claude", "-p", "--permission-mode", "acceptEdits"]);
+        c
+    } else {
+        let mut c = Command::new("claude");
+        c.args(["-p", "--permission-mode", "acceptEdits"]);
+        c
+    };
+    let mut child = cmd
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("claude 실행 실패: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(prompt.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+}
+
 /// Native folder picker. Runs off the main thread (commands do), so blocking is fine.
 #[tauri::command]
 fn pick_folder(app: tauri::AppHandle) -> Option<String> {
@@ -209,15 +278,19 @@ pub fn run() {
             write_file,
             path_exists,
             create_dir,
+            delete_path,
             list_dir,
             list_workstations,
             add_workstation,
             list_components,
             save_components,
+            list_skills,
+            save_skills,
             import_memory,
             memory_local_enabled,
             set_memory_local,
             claude_home,
+            reconcile_memory,
             pick_folder
         ])
         .run(tauri::generate_context!())

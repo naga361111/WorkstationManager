@@ -143,6 +143,9 @@ button { font-family: inherit; }
 .dirrow { padding: 7px 10px; border: 1px solid var(--rule); border-radius: 6px; margin-bottom: 6px; font-size: 12.5px; color: var(--ink); }
 .dirrow.pick { display: block; width: 100%; text-align: left; background: none; cursor: pointer; font-family: inherit; }
 .dirrow.pick:hover { background: var(--rule); }
+.dirrow-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.dirrow-row .dirrow { margin-bottom: 0; flex: 1; }
+.dirrow-del { flex: none; }
 .editor-back { margin: 10px 10px 0; align-self: flex-start; }
 .empty { padding: 16px; color: var(--faint); font-size: 12.5px; }
 
@@ -175,6 +178,16 @@ button { font-family: inherit; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* ── 컴포넌트 저장소: 독립 창 (좌 목록 / 우 편집) ───── */
+/* ── 스킬 편집: 프론트매터 필드(키 고정 / 값 편집) ── */
+.fm-fields { display: flex; flex-direction: column; gap: 8px; margin: 10px 10px 0; padding: 10px; background: var(--panel-2); border: 1px solid var(--rule); border-radius: 6px; }
+.fm-summary { cursor: pointer; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; user-select: none; }
+.fm-fields:not([open]) { gap: 0; }
+.fm-field { display: flex; flex-direction: column; gap: 3px; }
+.fm-key { font-size: 11px; color: var(--faint); font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+.fm-val { width: 100%; padding: 6px 10px; background: var(--bg); color: var(--ink); border: 1px solid var(--rule-2); border-radius: 6px; font-size: 12.5px; font-family: inherit; }
+textarea.fm-val { resize: vertical; line-height: 1.5; font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+.fm-val:focus { outline: none; border-color: var(--accent); }
+
 /* ── 글로벌 창: bar2(탭) + 2패널(편집/디테일) ── */
 .gapp { display: grid; grid-template-rows: 38px 1fr; height: 100vh; }
 .gwork { grid-template-columns: 1fr 300px; }

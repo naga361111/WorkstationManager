@@ -4,6 +4,36 @@
 //   opts.memoryDetail(ws, refreshList): 메모리 목록 화면의 디테일 패널(선택). 없으면 비운다.
 const { invoke } = window.__TAURI__.core;
 
+// SKILL.md 등: 최상단 --- … --- 를 프론트매터(순서 보존 key/value)와 본문으로 분리한다.
+// value = 콜론 뒤 원문. 한 줄이면 inline(입력창), 여러 줄(folded/list)이면 원문 그대로 textarea로 왕복 보존.
+function parseFrontmatter(text) {
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!m) return { fields: [], body: text };
+  const fields = [];
+  let cur = null;
+  for (const line of m[1].split(/\r?\n/)) {
+    const km = line.match(/^([A-Za-z0-9_-]+):(.*)$/); // 들여쓴 연속 라인은 매치 안 됨
+    if (km) { cur = { key: km[1], raw: km[2] }; fields.push(cur); }
+    else if (cur) cur.raw += "\n" + line;
+  }
+  for (const f of fields) {
+    f.inline = !f.raw.includes("\n");
+    f.value = f.inline ? f.raw.replace(/^ /, "") : f.raw;
+  }
+  return { fields, body: text.slice(m[0].length).replace(/^[\r\n]+/, "") };
+}
+
+// 필드(키 고정, 값 편집)와 본문을 다시 SKILL.md 문자열로 조립. 프론트매터 없으면 본문만.
+function buildDoc(fields, body) {
+  if (fields.length === 0) return body;
+  const fm = fields.map(({ key, value, inline }) => {
+    if (!inline) return `${key}:${value}`;          // folded/list 등 여러 줄 값은 원문 보존
+    const v = value.replace(/\r?\n+/g, " ").trim(); // 한 줄 값: 편집 중 생긴 줄바꿈은 공백으로 접어 YAML 한 줄 유지
+    return v ? `${key}: ${v}` : `${key}:`;
+  }).join("\n");
+  return `---\n${fm}\n---\n\n${body}`;
+}
+
 export function createPanels(editBody, detailBody, opts = {}) {
   let refreshPicker = null; // 컴포넌트 창 변경 시 삽입 목록 갱신용. 해당 화면일 때만 세팅.
 
@@ -71,40 +101,94 @@ export function createPanels(editBody, detailBody, opts = {}) {
     } else {
       // 폴더 탭(메모리·스킬): 목록 → 클릭하면 편집 모드로 전환. 편집 화면 디테일=컴포넌트 삽입.
       //   메모리=파일 직접, 스킬=<스킬 폴더>/SKILL.md 를 연다.
-      const fileOf = item.key === "skills"
+      const isSkills = item.key === "skills";
+      const fileOf = isSkills
         ? (name) => path + "/" + name + "/SKILL.md"
         : (name) => path + "/" + name;
-      const openFile = (name) => openEditor(fileOf(name), showList);
-      const refreshEdit = () => renderDirList(path, openFile); // 편집 패널(목록)만 갱신
+      // 스킬/메모리 파일은 프론트매터 필드 에디터. 단 메모리 인덱스(MEMORY.md)는 형식이 달라 일반 편집.
+      // 메모리 파일은 저장 시 프론트매터 name에 맞춰 <name>.md로 리네임한다(스킬은 항상 SKILL.md라 제외).
+      const openFile = (name) =>
+        name === "MEMORY.md"
+          ? openEditor(fileOf(name), showList)
+          : openFmEditor(fileOf(name), showList, item.key === "memory" ? ws.path : null);
+      // 목록에서 삭제: 스킬=폴더 통째로, 메모리=파일(단 MEMORY.md 제외 — 버튼은 renderDirList가 가림).
+      // 메모리 삭제 후엔 인덱스 링크가 깨지므로 재정리 지시문을 남긴다.
+      const onDelete = isSkills
+        ? async (name) => {
+            if (!confirm("‘" + name + "’ 스킬을 삭제할까요?")) return;
+            await invoke("delete_path", { path: path + "/" + name });
+            await refreshEdit();
+          }
+        : item.key === "memory"
+        ? async (name) => {
+            if (!confirm("‘" + name + "’ 메모리를 삭제할까요?")) return;
+            await invoke("delete_path", { path: path + "/" + name });
+            await refreshEdit();
+          }
+        : null;
+      // 메모리 추가: 표준 프론트매터 템플릿으로 새 파일을 만들고 바로 편집기로 연다(저장 시 name.md로 리네임).
+      const onAdd = item.key === "memory" ? async () => {
+        const existing = await invoke("list_dir", { path }).catch(() => []);
+        let name = "new-memory.md";
+        for (let i = 2; existing.includes(name); i++) name = "new-memory-" + i + ".md";
+        const slug = name.replace(/\.md$/, "");
+        await invoke("write_file", {
+          path: path + "/" + name,
+          contents: `---\nname: ${slug}\ndescription: \nmetadata:\n  type: project\n---\n\n`,
+        });
+        openFile(name);
+      } : null;
+      const refreshEdit = () => renderDirList(path, openFile, onDelete, onAdd); // 편집 패널(목록)만 갱신
       async function showList() {
         refreshPicker = null; // 목록 화면에선 컴포넌트 창 변경 무시
         detailBody.innerHTML = "";
-        // 메모리 목록 화면 디테일(위치 토글+가져오기)은 메인 창 워크스테이션에서만.
+        // 목록 화면 디테일은 메인 창 워크스테이션에서만. 메모리=위치 토글+가져오기, 스킬=앱 스킬 복사.
         if (item.key === "memory" && opts.memoryDetail) await opts.memoryDetail(ws, refreshEdit);
+        if (item.key === "skills" && opts.skillsDetail) await opts.skillsDetail(ws, refreshEdit);
         await refreshEdit();
       }
       await showList();
     }
   }
 
-  // 폴더의 파일 목록을 편집 패널에 그린다. onPick이 있으면 행을 클릭 가능한 버튼으로. 항목 수 반환.
-  async function renderDirList(path, onPick) {
+  // 폴더의 파일 목록을 편집 패널에 그린다. onPick이 있으면 행을 클릭 가능한 버튼으로,
+  // onDelete가 있으면 행마다 삭제 버튼을 붙인다. 항목 수 반환.
+  async function renderDirList(path, onPick, onDelete, onAdd) {
     editBody.innerHTML = "";
     const names = await invoke("list_dir", { path }).catch(() => []);
     if (names.length === 0) {
       editBody.innerHTML = '<p class="empty">비어 있음</p>';
-      return 0;
-    }
+    } else {
     const ul = document.createElement("div");
     ul.className = "dirlist";
     names.forEach((n) => {
-      const row = document.createElement(onPick ? "button" : "div");
-      row.className = "dirrow" + (onPick ? " pick" : "");
-      row.textContent = n;
-      if (onPick) row.onclick = () => onPick(n);
-      ul.appendChild(row);
+      const pick = document.createElement(onPick ? "button" : "div");
+      pick.className = "dirrow" + (onPick ? " pick" : "");
+      pick.textContent = n;
+      if (onPick) pick.onclick = () => onPick(n);
+      // 인덱스 파일(MEMORY.md)은 삭제 대상이 아니라 삭제 버튼을 붙이지 않는다.
+      if (onDelete && n !== "MEMORY.md") {
+        const del = document.createElement("button");
+        del.className = "btn dirrow-del";
+        del.textContent = "삭제";
+        del.onclick = () => onDelete(n);
+        const wrap = document.createElement("div");
+        wrap.className = "dirrow-row";
+        wrap.append(pick, del);
+        ul.appendChild(wrap);
+      } else {
+        ul.appendChild(pick);
+      }
     });
     editBody.appendChild(ul);
+    }
+    if (onAdd) {
+      const add = document.createElement("button");
+      add.className = "addrow";
+      add.innerHTML = '<svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>메모리 추가';
+      add.onclick = onAdd;
+      editBody.appendChild(add);
+    }
     return names.length;
   }
 
@@ -139,6 +223,98 @@ export function createPanels(editBody, detailBody, opts = {}) {
     editBody.append(backBtn, ta, pv, editorActions(toggle, save));
 
     // 디테일 패널: 컴포넌트 삽입(현재 textarea 커서에 내용 삽입). 컴포넌트 창 변경 시 갱신.
+    renderCompPicker(ta, syncSave);
+    refreshPicker = () => renderCompPicker(ta, syncSave);
+  }
+
+  // 프론트매터가 있는 문서(SKILL.md·메모리 파일): 프론트매터를 키(고정)/값(편집) 필드로,
+  // 본문은 textarea로 나눠 편집. 존재하는 키만 순회. 저장 시 원문 형식으로 재조립. 미리보기=본문.
+  async function openFmEditor(path, back, memoryWs) {
+    editBody.innerHTML = "";
+
+    const backBtn = document.createElement("button");
+    backBtn.className = "btn editor-back";
+    backBtn.textContent = "← 목록";
+    backBtn.onclick = back;
+
+    const raw = await invoke("read_file", { path }).catch(() => "");
+    const { fields, body } = parseFrontmatter(raw);
+
+    // 프론트매터 필드: 키 라벨 고정 + 값 편집(한 줄=input, 여러 줄=textarea). 접을 수 있게 <details>.
+    const inputs = [];
+    let fmEl = null;
+    if (fields.length) {
+      fmEl = document.createElement("details");
+      fmEl.className = "fm-fields";
+      fmEl.open = true;
+      const summary = document.createElement("summary");
+      summary.className = "fm-summary";
+      summary.textContent = "프론트매터";
+      fmEl.appendChild(summary);
+    }
+    fields.forEach((f) => {
+      const row = document.createElement("div");
+      row.className = "fm-field";
+      const k = document.createElement("span");
+      k.className = "fm-key";
+      k.textContent = f.key;
+      // 값이 여러 줄이거나 길면(예: description) textarea로 줄바꿈해 보여주고, 짧은 한 줄만 input.
+      const multiline = !f.inline || f.value.length > 60;
+      let el;
+      if (multiline) {
+        el = document.createElement("textarea");
+        el.value = f.value;
+        el.rows = f.inline ? 3 : Math.min(8, f.value.split("\n").length);
+      } else {
+        el = document.createElement("input");
+        el.type = "text";
+        el.value = f.value;
+      }
+      el.className = "fm-val";
+      row.append(k, el);
+      fmEl.appendChild(row);
+      inputs.push({ key: f.key, el, inline: f.inline });
+    });
+
+    const ta = document.createElement("textarea");
+    ta.className = "editor";
+    ta.value = body;
+
+    const save = document.createElement("button");
+    save.className = "btn primary editor-save";
+    save.textContent = "저장";
+    const rebuild = () =>
+      buildDoc(inputs.map((i) => ({ key: i.key, value: i.el.value, inline: i.inline })), ta.value);
+    let saved = rebuild(); // 파싱→재조립 기준. 왕복 정규화(빈 줄 등) 반영해 초기엔 비활성화.
+    const syncSave = () => { save.disabled = rebuild() === saved; };
+    ta.oninput = syncSave;
+    inputs.forEach((i) => (i.el.oninput = syncSave));
+    syncSave();
+    save.onclick = async () => {
+      const out = rebuild();
+      // 메모리: 프론트매터 name이 바뀌면 <name>.md로 리네임(새 파일 쓰고 옛 파일 삭제).
+      let target = path;
+      if (memoryWs) {
+        const nm = (inputs.find((i) => i.key === "name")?.el.value || "")
+          .replace(/[\\/:*?"<>|]/g, "-").trim();
+        if (nm) {
+          const np = path.slice(0, path.lastIndexOf("/") + 1) + nm + ".md";
+          if (np !== path) target = np;
+        }
+      }
+      await invoke("write_file", { path: target, contents: out });
+      if (target !== path) {
+        await invoke("delete_path", { path });
+        path = target;
+      }
+      saved = out;
+      syncSave();
+    };
+
+    const { pv, toggle } = attachPreview(ta); // 미리보기는 본문 기준(기존과 동일)
+    editBody.append(backBtn, ...(fmEl ? [fmEl] : []), ta, pv, editorActions(toggle, save));
+
+    // 디테일 패널: 컴포넌트 삽입(본문 커서에). 컴포넌트 창 변경 시 갱신.
     renderCompPicker(ta, syncSave);
     refreshPicker = () => renderCompPicker(ta, syncSave);
   }

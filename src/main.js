@@ -26,7 +26,10 @@ let selected = 0;
 let activeTab = null; // 현재 선택된 탭 key
 
 // 편집/디테일 패널은 공유 모듈이 담당. 메모리 목록 디테일은 워크스테이션 전용(위치 토글+가져오기).
-const panels = createPanels(editBody, detailBody, { memoryDetail: renderMemoryDetail });
+const panels = createPanels(editBody, detailBody, {
+  memoryDetail: renderMemoryDetail,
+  skillsDetail: renderSkillsDetail,
+});
 
 // 컴포넌트 창에서 저장/삭제하면 디테일 패널의 컴포넌트 목록을 에디터 유지한 채 갱신한다.
 listen("components-changed", () => panels.onComponentsChanged());
@@ -173,7 +176,103 @@ async function renderMemoryDetail(ws, refreshList) {
     btn.disabled = false;
   };
 
-  wrap.append(locLabel, seg, note, hr, label, desc, btn, status);
+  const hr2 = document.createElement("div");
+  hr2.style.cssText = "height:1px;background:var(--wsm-border,#333);margin:16px 0";
+
+  const rcLabel = document.createElement("div");
+  rcLabel.className = "wsm-label";
+  rcLabel.style.marginBottom = "6px";
+  rcLabel.textContent = "메모리 인덱스 정리";
+
+  const rcDesc = document.createElement("p");
+  rcDesc.className = "empty";
+  rcDesc.style.margin = "0 0 10px";
+  rcDesc.textContent = "백그라운드로 Claude를 실행해 MEMORY.md를 실제 메모리 파일에 맞게 수정합니다.";
+
+  const rcBtn = document.createElement("button");
+  rcBtn.className = "btn primary";
+  rcBtn.textContent = "메모리 인덱스 파일 수정";
+
+  const rcStatus = document.createElement("p");
+  rcStatus.className = "empty";
+  rcStatus.style.margin = "10px 0 0";
+
+  rcBtn.onclick = async () => {
+    rcBtn.disabled = true;
+    rcStatus.textContent = "정리 중… (Claude 실행)";
+    try {
+      await invoke("reconcile_memory", { dir: ws.path + "/memory" });
+      await refreshList(); // MEMORY.md가 새로 생겼을 수 있으니 목록 갱신
+      rcStatus.textContent = "완료했습니다.";
+    } catch (e) {
+      rcStatus.textContent = "오류: " + e;
+    }
+    rcBtn.disabled = false;
+  };
+
+  wrap.append(locLabel, seg, note, hr, label, desc, btn, status, hr2, rcLabel, rcDesc, rcBtn, rcStatus);
+  detailBody.appendChild(wrap);
+}
+
+// 스킬 목록 화면 디테일: 앱에 정의된 스킬(list_skills)을 이 프로젝트의 .claude/skills로 복사한다.
+// SKILL.md 규격(name/description 프론트매터 + content 본문)으로 만든다. 복사본은 독립본(원본 변경 미반영).
+async function renderSkillsDetail(ws, refreshList) {
+  detailBody.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.style.padding = "12px";
+
+  const label = document.createElement("div");
+  label.className = "wsm-label";
+  label.style.marginBottom = "6px";
+  label.textContent = "스킬 추가";
+
+  const desc = document.createElement("p");
+  desc.className = "empty";
+  desc.style.margin = "0 0 10px";
+  desc.textContent = "앱에 정의된 스킬을 이 프로젝트로 복사합니다.";
+
+  const status = document.createElement("p");
+  status.className = "empty";
+  status.style.margin = "10px 0 0";
+
+  wrap.append(label, desc);
+
+  const skills = await invoke("list_skills").catch(() => []);
+  if (skills.length === 0) {
+    const none = document.createElement("p");
+    none.className = "empty";
+    none.style.margin = "0";
+    none.textContent = "정의된 스킬이 없습니다. 상단바 ‘스킬’에서 추가하세요.";
+    wrap.appendChild(none);
+  }
+  const dir = ws.path + "/.claude/skills";
+  skills.forEach((s) => {
+    const row = document.createElement("button");
+    row.className = "listrow";
+    row.title = s.description;
+    row.innerHTML =
+      '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L4.5 12.5H11l-1 9.5 8.5-11H12z"/></svg>' +
+      '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
+    row.querySelector(".lr-name").textContent = s.title || "(제목 없음)";
+    row.querySelector(".lr-sub").textContent = s.description;
+    row.onclick = async () => {
+      // 폴더 이름 = 스킬 제목(파일명 금지문자만 치환). 이미 있으면 -2, -3… 붙여 기존 복사본 보존.
+      const base = (s.title || "").replace(/[\\/:*?"<>|]/g, "-").trim() || "skill";
+      const existing = await invoke("list_dir", { path: dir }).catch(() => []);
+      let name = base;
+      for (let i = 2; existing.includes(name); i++) name = base + "-" + i;
+      const skillDir = dir + "/" + name;
+      // SKILL.md 규격: 프론트매터(name=폴더명, description) + 본문(content). 본문은 그대로 복사.
+      const fm = `---\nname: ${name}\ndescription: ${(s.description || "").replace(/\r?\n+/g, " ").trim()}\n---\n\n`;
+      await invoke("create_dir", { path: skillDir });
+      await invoke("write_file", { path: skillDir + "/SKILL.md", contents: fm + s.content });
+      await refreshList();
+      status.textContent = "‘" + name + "’ 추가됨.";
+    };
+    wrap.appendChild(row);
+  });
+
+  wrap.appendChild(status);
   detailBody.appendChild(wrap);
 }
 
@@ -197,6 +296,24 @@ document.getElementById("comp-toggle").onclick = async () => {
   new WebviewWindow("components", {
     url: "components.html",
     title: "컴포넌트 저장소",
+    width: 900,
+    height: 640,
+    minWidth: 560,
+    minHeight: 400,
+  });
+};
+
+// ── 스킬 저장소 ──────────────────────────────────────
+// 이 앱이 가진 스킬(클로드 스킬 아님)을 컴포넌트처럼 관리하는 독립 창.
+document.getElementById("skill-toggle").onclick = async () => {
+  const existing = await WebviewWindow.getByLabel("skills");
+  if (existing) {
+    await existing.setFocus();
+    return;
+  }
+  new WebviewWindow("skills", {
+    url: "skills.html",
+    title: "스킬 저장소",
     width: 900,
     height: 640,
     minWidth: 560,
