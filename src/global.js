@@ -13,9 +13,12 @@ const panels = createPanels(editBody, detailBody);
 
 // 컴포넌트 창에서 저장/삭제 시 삽입 목록 갱신(메인과 동일).
 listen("components-changed", () => panels.onComponentsChanged());
+listen("skills-changed", () => panels.onSkillsChanged());
 
+// 전역(개인) 스킬은 ~/.claude/skills. ws.path가 이미 ~/.claude이므로 rel은 "skills".
 const ITEMS = [
   { key: "claude_md", label: "CLAUDE.md", rel: "CLAUDE.md", type: "file" },
+  { key: "skills", label: "Skills", rel: "skills", type: "dir" },
   { key: "memory", label: "메모리", rel: "memory", type: "dir" },
 ];
 

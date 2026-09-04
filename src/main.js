@@ -21,18 +21,19 @@ const CLAUDE_ITEMS = [
   { key: "memory", label: "메모리", rel: "memory", type: "dir" },
 ];
 
+// 플러그인 탭 key. CLAUDE_ITEMS와 달리 파일 존재와 무관하게 항상 뜬다(플러그인은 전역 설치).
+const PLUGINS_TAB = "plugins";
+
 let workstations = [];
 let selected = 0;
 let activeTab = null; // 현재 선택된 탭 key
 
 // 편집/디테일 패널은 공유 모듈이 담당. 메모리 목록 디테일은 워크스테이션 전용(위치 토글+가져오기).
-const panels = createPanels(editBody, detailBody, {
-  memoryDetail: renderMemoryDetail,
-  skillsDetail: renderSkillsDetail,
-});
+const panels = createPanels(editBody, detailBody, { memoryDetail: renderMemoryDetail });
 
 // 컴포넌트 창에서 저장/삭제하면 디테일 패널의 컴포넌트 목록을 에디터 유지한 채 갱신한다.
 listen("components-changed", () => panels.onComponentsChanged());
+listen("skills-changed", () => panels.onSkillsChanged());
 
 function render() {
   listEl.innerHTML = "";
@@ -51,7 +52,40 @@ function render() {
       render();
       renderBar2();
     };
-    listEl.appendChild(row);
+
+    // 시작: 이 폴더에서 Claude CLI를 새 터미널 창으로 연다.
+    const start = document.createElement("button");
+    start.className = "btn primary dirrow-del";
+    start.textContent = "시작";
+    start.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        await invoke("start_session", { workstation: ws.path });
+      } catch (err) {
+        alert("시작 실패: " + err);
+      }
+    };
+
+    // 삭제: 목록(등록)에서만 제거하고 실제 폴더는 그대로 둔다.
+    const del = document.createElement("button");
+    del.className = "btn dirrow-del";
+    del.textContent = "삭제";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm("‘" + ws.name + "’을(를) 목록에서 제거할까요? (폴더는 삭제되지 않습니다)")) return;
+      workstations = await invoke("remove_workstation", { index: i });
+      // 선택 위치 보정: 지운 게 선택보다 앞이면 한 칸 당기고, 범위를 넘으면 마지막으로.
+      if (selected >= workstations.length) selected = workstations.length - 1;
+      else if (i < selected) selected -= 1;
+      activeTab = null;
+      render();
+      renderBar2();
+    };
+
+    const wrap = document.createElement("div");
+    wrap.className = "dirrow-row" + (i === selected ? " selected" : "");
+    wrap.append(row, start, del);
+    listEl.appendChild(wrap);
   });
 }
 
@@ -70,8 +104,9 @@ async function renderBar2() {
   );
   const items = CLAUDE_ITEMS.filter((_, i) => present[i]);
 
-  // 활성 탭이 없거나 사라졌으면 첫 탭으로.
-  if (!items.some((it) => it.key === activeTab)) activeTab = items[0]?.key ?? null;
+  // 활성 탭이 없거나 사라졌으면 첫 탭으로(플러그인 탭도 유효한 선택으로 인정).
+  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB);
+  if (!validKeys.includes(activeTab)) activeTab = items[0]?.key ?? PLUGINS_TAB;
 
   items.forEach((it) => {
     const tab = document.createElement("button");
@@ -83,6 +118,13 @@ async function renderBar2() {
     };
     bar2.appendChild(tab);
   });
+
+  // 플러그인 탭: 항상 표시.
+  const ptab = document.createElement("button");
+  ptab.className = "tab" + (activeTab === PLUGINS_TAB ? " active" : "");
+  ptab.textContent = "플러그인";
+  ptab.onclick = () => { activeTab = PLUGINS_TAB; renderBar2(); };
+  bar2.appendChild(ptab);
 
   const missing = CLAUDE_ITEMS.filter((_, i) => !present[i]);
   if (missing.length > 0) {
@@ -100,8 +142,51 @@ async function renderBar2() {
 // 활성 탭 하나가 편집 패널(중앙)과 디테일 패널(우측)을 소유한다. 렌더링은 공유 모듈에 위임.
 async function renderPanels() {
   const ws = workstations[selected];
+  if (activeTab === PLUGINS_TAB) return renderPlugins(ws);
   const item = CLAUDE_ITEMS.find((it) => it.key === activeTab);
   await panels.render(ws, item);
+}
+
+// 플러그인 탭: 전역 설치된 모든 플러그인을 목록으로. 토글은 이 워크스테이션의
+// .claude/settings.local.json(로컬 전용)에만 enabledPlugins로 쓴다.
+async function renderPlugins(ws) {
+  editBody.innerHTML = "";
+  detailBody.innerHTML = "";
+  if (!ws) {
+    editBody.innerHTML = '<p class="empty">워크스테이션을 선택하세요.</p>';
+    return;
+  }
+  const plugins = await invoke("list_plugins", { workstation: ws.path }).catch(() => []);
+  if (plugins.length === 0) {
+    editBody.innerHTML = '<p class="empty">설치된 플러그인이 없습니다.</p>';
+  } else {
+    const list = document.createElement("div");
+    list.className = "dirlist";
+    plugins.forEach((p) => {
+      const row = document.createElement("div");
+      row.className = "dirrow-row";
+      const name = document.createElement("div");
+      name.className = "dirrow";
+      name.textContent = p.id;
+      const tog = document.createElement("button");
+      const paint = () => {
+        tog.className = "btn dirrow-del" + (p.enabled ? " primary" : "");
+        tog.textContent = p.enabled ? "켜짐" : "꺼짐";
+      };
+      paint();
+      tog.onclick = async () => {
+        p.enabled = !p.enabled;
+        await invoke("set_plugin_local", { workstation: ws.path, id: p.id, enabled: p.enabled });
+        paint();
+      };
+      row.append(name, tog);
+      list.appendChild(row);
+    });
+    editBody.appendChild(list);
+  }
+  detailBody.innerHTML =
+    '<div style="padding:12px"><div class="wsm-label" style="margin-bottom:6px">플러그인</div>' +
+    '<p class="empty" style="margin:0">이 워크스테이션의 .claude/settings.local.json에만 반영됩니다. 다음 세션부터 적용됩니다.</p></div>';
 }
 
 // 메모리 탭 디테일: 자동 메모리 위치 토글(기존 ↔ 여기) + 기존 메모리 복사.
@@ -211,68 +296,6 @@ async function renderMemoryDetail(ws, refreshList) {
   };
 
   wrap.append(locLabel, seg, note, hr, label, desc, btn, status, hr2, rcLabel, rcDesc, rcBtn, rcStatus);
-  detailBody.appendChild(wrap);
-}
-
-// 스킬 목록 화면 디테일: 앱에 정의된 스킬(list_skills)을 이 프로젝트의 .claude/skills로 복사한다.
-// SKILL.md 규격(name/description 프론트매터 + content 본문)으로 만든다. 복사본은 독립본(원본 변경 미반영).
-async function renderSkillsDetail(ws, refreshList) {
-  detailBody.innerHTML = "";
-  const wrap = document.createElement("div");
-  wrap.style.padding = "12px";
-
-  const label = document.createElement("div");
-  label.className = "wsm-label";
-  label.style.marginBottom = "6px";
-  label.textContent = "스킬 추가";
-
-  const desc = document.createElement("p");
-  desc.className = "empty";
-  desc.style.margin = "0 0 10px";
-  desc.textContent = "앱에 정의된 스킬을 이 프로젝트로 복사합니다.";
-
-  const status = document.createElement("p");
-  status.className = "empty";
-  status.style.margin = "10px 0 0";
-
-  wrap.append(label, desc);
-
-  const skills = await invoke("list_skills").catch(() => []);
-  if (skills.length === 0) {
-    const none = document.createElement("p");
-    none.className = "empty";
-    none.style.margin = "0";
-    none.textContent = "정의된 스킬이 없습니다. 상단바 ‘스킬’에서 추가하세요.";
-    wrap.appendChild(none);
-  }
-  const dir = ws.path + "/.claude/skills";
-  skills.forEach((s) => {
-    const row = document.createElement("button");
-    row.className = "listrow";
-    row.title = s.description;
-    row.innerHTML =
-      '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L4.5 12.5H11l-1 9.5 8.5-11H12z"/></svg>' +
-      '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
-    row.querySelector(".lr-name").textContent = s.title || "(제목 없음)";
-    row.querySelector(".lr-sub").textContent = s.description;
-    row.onclick = async () => {
-      // 폴더 이름 = 스킬 제목(파일명 금지문자만 치환). 이미 있으면 -2, -3… 붙여 기존 복사본 보존.
-      const base = (s.title || "").replace(/[\\/:*?"<>|]/g, "-").trim() || "skill";
-      const existing = await invoke("list_dir", { path: dir }).catch(() => []);
-      let name = base;
-      for (let i = 2; existing.includes(name); i++) name = base + "-" + i;
-      const skillDir = dir + "/" + name;
-      // SKILL.md 규격: 프론트매터(name=폴더명, description) + 본문(content). 본문은 그대로 복사.
-      const fm = `---\nname: ${name}\ndescription: ${(s.description || "").replace(/\r?\n+/g, " ").trim()}\n---\n\n`;
-      await invoke("create_dir", { path: skillDir });
-      await invoke("write_file", { path: skillDir + "/SKILL.md", contents: fm + s.content });
-      await refreshList();
-      status.textContent = "‘" + name + "’ 추가됨.";
-    };
-    wrap.appendChild(row);
-  });
-
-  wrap.appendChild(status);
   detailBody.appendChild(wrap);
 }
 

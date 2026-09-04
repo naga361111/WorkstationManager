@@ -36,6 +36,7 @@ function buildDoc(fields, body) {
 
 export function createPanels(editBody, detailBody, opts = {}) {
   let refreshPicker = null; // 컴포넌트 창 변경 시 삽입 목록 갱신용. 해당 화면일 때만 세팅.
+  let refreshSkills = null; // 스킬 창 변경 시 스킬 목록 디테일 갱신용. 스킬 목록 화면일 때만 세팅.
 
   // 편집기(textarea)에 마크다운 미리보기 토글을 붙인다. marked로 렌더링.
   function attachPreview(ta) {
@@ -65,6 +66,7 @@ export function createPanels(editBody, detailBody, opts = {}) {
     editBody.innerHTML = "";
     detailBody.innerHTML = "";
     refreshPicker = null; // 탭이 바뀌면 초기화; 아래에서 CLAUDE.md일 때만 다시 세팅
+    refreshSkills = null; // 탭이 바뀌면 초기화; 스킬 목록 화면일 때만 다시 세팅
     if (!ws || !item) return;
     const path = ws.path + "/" + item.rel;
 
@@ -141,10 +143,14 @@ export function createPanels(editBody, detailBody, opts = {}) {
       const refreshEdit = () => renderDirList(path, openFile, onDelete, onAdd); // 편집 패널(목록)만 갱신
       async function showList() {
         refreshPicker = null; // 목록 화면에선 컴포넌트 창 변경 무시
+        refreshSkills = null;
         detailBody.innerHTML = "";
         // 목록 화면 디테일은 메인 창 워크스테이션에서만. 메모리=위치 토글+가져오기, 스킬=앱 스킬 복사.
         if (item.key === "memory" && opts.memoryDetail) await opts.memoryDetail(ws, refreshEdit);
-        if (item.key === "skills" && opts.skillsDetail) await opts.skillsDetail(ws, refreshEdit);
+        if (item.key === "skills") {
+          await renderSkillsDetail(path, refreshEdit);
+          refreshSkills = () => renderSkillsDetail(path, refreshEdit); // 스킬 창 변경 시 목록 갱신용
+        }
         await refreshEdit();
       }
       await showList();
@@ -331,6 +337,68 @@ export function createPanels(editBody, detailBody, opts = {}) {
     });
   }
 
+  // 스킬 목록 화면 디테일: 앱에 정의된 스킬(list_skills)을 이 스킬 폴더(dir)로 복사한다.
+  // SKILL.md 규격(name/description 프론트매터 + content 본문)으로 만든다. 복사본은 독립본(원본 변경 미반영).
+  // 프로젝트(.claude/skills)·글로벌(~/.claude/skills) 공통이라 dir만 다르게 받아 처리한다.
+  async function renderSkillsDetail(dir, refreshList) {
+    detailBody.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.padding = "12px";
+
+    const label = document.createElement("div");
+    label.className = "wsm-label";
+    label.style.marginBottom = "6px";
+    label.textContent = "스킬 추가";
+
+    const desc = document.createElement("p");
+    desc.className = "empty";
+    desc.style.margin = "0 0 10px";
+    desc.textContent = "앱에 정의된 스킬을 여기로 복사합니다.";
+
+    const status = document.createElement("p");
+    status.className = "empty";
+    status.style.margin = "10px 0 0";
+
+    wrap.append(label, desc);
+
+    const skills = await invoke("list_skills").catch(() => []);
+    if (skills.length === 0) {
+      const none = document.createElement("p");
+      none.className = "empty";
+      none.style.margin = "0";
+      none.textContent = "정의된 스킬이 없습니다. 상단바 ‘스킬’에서 추가하세요.";
+      wrap.appendChild(none);
+    }
+    skills.forEach((s) => {
+      const row = document.createElement("button");
+      row.className = "listrow";
+      row.title = s.description;
+      row.innerHTML =
+        '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L4.5 12.5H11l-1 9.5 8.5-11H12z"/></svg>' +
+        '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
+      row.querySelector(".lr-name").textContent = s.title || "(제목 없음)";
+      row.querySelector(".lr-sub").textContent = s.description;
+      row.onclick = async () => {
+        // 폴더 이름 = 스킬 제목(파일명 금지문자만 치환). 이미 있으면 -2, -3… 붙여 기존 복사본 보존.
+        const base = (s.title || "").replace(/[\\/:*?"<>|]/g, "-").trim() || "skill";
+        const existing = await invoke("list_dir", { path: dir }).catch(() => []);
+        let name = base;
+        for (let i = 2; existing.includes(name); i++) name = base + "-" + i;
+        const skillDir = dir + "/" + name;
+        // SKILL.md 규격: 프론트매터(name=폴더명, description) + 본문(content). 본문은 그대로 복사.
+        const fm = `---\nname: ${name}\ndescription: ${(s.description || "").replace(/\r?\n+/g, " ").trim()}\n---\n\n`;
+        await invoke("create_dir", { path: skillDir });
+        await invoke("write_file", { path: skillDir + "/SKILL.md", contents: fm + s.content });
+        await refreshList();
+        status.textContent = "‘" + name + "’ 추가됨.";
+      };
+      wrap.appendChild(row);
+    });
+
+    wrap.appendChild(status);
+    detailBody.appendChild(wrap);
+  }
+
   // CLAUDE.md/메모리 편집 시: 디테일 패널에서 컴포넌트를 조회하고, 고른 컴포넌트의 '내용'만
   // 에디터 커서 위치에 삽입한다(제목/설명은 삽입하지 않음).
   async function renderCompPicker(ta, syncSave) {
@@ -396,5 +464,6 @@ export function createPanels(editBody, detailBody, opts = {}) {
     render,
     openAddMenu,
     onComponentsChanged: () => refreshPicker?.(),
+    onSkillsChanged: () => refreshSkills?.(),
   };
 }

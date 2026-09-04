@@ -82,6 +82,19 @@ fn add_workstation(name: String, path: String) -> Result<Vec<Workstation>, Strin
     Ok(list)
 }
 
+/// 목록에서 index 위치의 워크스테이션을 제거한다. 실제 폴더는 건드리지 않고 등록만 지운다.
+#[tauri::command]
+fn remove_workstation(index: usize) -> Result<Vec<Workstation>, String> {
+    let mut list = list_workstations()?;
+    if index >= list.len() {
+        return Err("index out of range".into());
+    }
+    list.remove(index);
+    let json = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
+    fs::write(store_path("workstations.json")?, json).map_err(|e| e.to_string())?;
+    Ok(list)
+}
+
 /// 컴포넌트 = 제목 + 설명 + 내용. 저장소는 이 목록 전체를 components.json에 담는다.
 #[derive(Serialize, Deserialize, Clone)]
 struct Component {
@@ -216,6 +229,89 @@ fn claude_home() -> Result<String, String> {
     Ok(home_dir()?.join(".claude").to_string_lossy().replace('\\', "/"))
 }
 
+// ── 플러그인 로컬 토글 ─────────────────────────────────
+// 플러그인은 항상 전역(~/.claude/plugins)에 설치된다. 켜고 끄는 건 settings의 enabledPlugins 맵
+// ("plugin@marketplace": bool). 여기선 워크스테이션의 settings.local.json(로컬 전용)에만 쓴다.
+
+/// settings 파일 하나의 enabledPlugins 맵(없으면 빈 맵).
+fn enabled_map(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("enabledPlugins").and_then(|m| m.as_object()).cloned())
+        .unwrap_or_default()
+}
+
+#[derive(Serialize)]
+struct PluginInfo {
+    id: String,
+    enabled: bool,
+}
+
+/// 전역에 설치된 모든 플러그인 + 이 워크스테이션 기준 실효 on/off.
+/// 우선순위 local > project(공유) > user, 아무 데도 없으면 설치 기본값(켜짐).
+#[tauri::command]
+fn list_plugins(workstation: &str) -> Result<Vec<PluginInfo>, String> {
+    let installed = home_dir()?
+        .join(".claude")
+        .join("plugins")
+        .join("installed_plugins.json");
+    let v: serde_json::Value = fs::read_to_string(&installed)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let ws = PathBuf::from(workstation);
+    let local = enabled_map(&settings_local_path(workstation));
+    let project = enabled_map(&ws.join(".claude").join("settings.json"));
+    let user = enabled_map(&home_dir()?.join(".claude").join("settings.json"));
+    let effective = |id: &str| -> bool {
+        for m in [&local, &project, &user] {
+            if let Some(b) = m.get(id).and_then(|x| x.as_bool()) {
+                return b;
+            }
+        }
+        true // 설치돼 있고 아무도 끄지 않았으면 켜진 상태가 기본
+    };
+
+    let mut out = vec![];
+    if let Some(map) = v.get("plugins").and_then(|p| p.as_object()) {
+        for id in map.keys() {
+            out.push(PluginInfo { id: id.clone(), enabled: effective(id) });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+/// 이 워크스테이션의 settings.local.json에 enabledPlugins[id]=enabled 를 쓴다(다른 키 보존).
+#[tauri::command]
+fn set_plugin_local(workstation: &str, id: &str, enabled: bool) -> Result<(), String> {
+    let path = settings_local_path(workstation);
+    let mut v: serde_json::Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    let obj = v.as_object_mut().unwrap();
+    let ep = obj
+        .entry("enabledPlugins")
+        .or_insert_with(|| serde_json::json!({}));
+    if !ep.is_object() {
+        *ep = serde_json::json!({});
+    }
+    ep.as_object_mut()
+        .unwrap()
+        .insert(id.to_string(), serde_json::Value::Bool(enabled));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
 /// 메모리 인덱스 정리: 헤드리스 Claude Code를 메모리 폴더 안에서 돌려 MEMORY.md를 실제 파일에 맞춘다.
 /// 프롬프트는 stdin으로 넘겨 인용부호 문제를 피한다. Windows는 .cmd 셈을 위해 cmd /C 경유.
 // ponytail: claude가 PATH에 있어야 함(폴백 없음, 요청대로).
@@ -259,6 +355,27 @@ fn reconcile_memory(dir: &str) -> Result<String, String> {
     }
 }
 
+/// 워크스테이션 폴더에서 Claude CLI를 새 터미널 창으로 연다(대화형 세션).
+/// Windows: `start`가 호출자의 cwd를 물려받으므로 current_dir만 잡고 새 cmd 창에서 claude를 /K로 띄운다.
+// ponytail: Windows 전용. claude가 PATH에 있어야 함(reconcile_memory와 동일 전제).
+#[tauri::command]
+fn start_session(workstation: &str) -> Result<(), String> {
+    use std::process::Command;
+    if !Path::new(workstation).is_dir() {
+        return Err("폴더가 없습니다".into());
+    }
+    if cfg!(windows) {
+        Command::new("cmd")
+            .current_dir(workstation)
+            .args(["/C", "start", "", "cmd", "/K", "claude"])
+            .spawn()
+            .map_err(|e| format!("터미널 실행 실패: {e}"))?;
+        Ok(())
+    } else {
+        Err("Windows에서만 지원됩니다".into())
+    }
+}
+
 /// Native folder picker. Runs off the main thread (commands do), so blocking is fine.
 #[tauri::command]
 fn pick_folder(app: tauri::AppHandle) -> Option<String> {
@@ -282,6 +399,7 @@ pub fn run() {
             list_dir,
             list_workstations,
             add_workstation,
+            remove_workstation,
             list_components,
             save_components,
             list_skills,
@@ -290,7 +408,10 @@ pub fn run() {
             memory_local_enabled,
             set_memory_local,
             claude_home,
+            list_plugins,
+            set_plugin_local,
             reconcile_memory,
+            start_session,
             pick_folder
         ])
         .run(tauri::generate_context!())
@@ -347,5 +468,29 @@ mod tests {
         assert!(!memory_local_enabled(ws)); // 다시 기존(키 삭제)
 
         fs::remove_dir_all(ws).ok();
+    }
+
+    #[test]
+    fn plugin_local_toggle_roundtrip() {
+        let ws = std::env::temp_dir().join("ws_plugin_toggle_test");
+        fs::remove_dir_all(&ws).ok();
+        fs::create_dir_all(&ws).unwrap();
+        let wss = ws.to_str().unwrap();
+        let lp = settings_local_path(wss);
+
+        // 기존에 다른 키가 있어도 보존돼야 한다.
+        fs::create_dir_all(lp.parent().unwrap()).unwrap();
+        fs::write(&lp, r#"{"outputStyle":"Concise"}"#).unwrap();
+
+        assert!(enabled_map(&lp).get("foo@bar").is_none()); // 아직 없음
+        set_plugin_local(wss, "foo@bar", false).unwrap();
+        assert_eq!(enabled_map(&lp).get("foo@bar").and_then(|x| x.as_bool()), Some(false));
+        set_plugin_local(wss, "foo@bar", true).unwrap();
+        assert_eq!(enabled_map(&lp).get("foo@bar").and_then(|x| x.as_bool()), Some(true));
+
+        let s = fs::read_to_string(&lp).unwrap();
+        assert!(s.contains("outputStyle")); // 다른 키 보존
+
+        fs::remove_dir_all(&ws).ok();
     }
 }
