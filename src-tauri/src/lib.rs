@@ -140,6 +140,56 @@ fn import_memory(workstation: &str) -> Result<usize, String> {
     copy_files(&src, &dst)
 }
 
+// ── 자동 메모리 위치 토글 ──────────────────────────────
+// Claude Code가 실제로 읽는 레벨은 .claude/settings.local.json(로컬). 프로젝트 settings.json은
+// autoMemoryDirectory를 무시하므로 여기에 쓴다. 키가 있으면 '여기'(<workstation>/memory), 없으면 '기존'.
+
+fn settings_local_path(workstation: &str) -> PathBuf {
+    PathBuf::from(workstation).join(".claude").join("settings.local.json")
+}
+
+#[tauri::command]
+fn memory_local_enabled(workstation: &str) -> bool {
+    fs::read_to_string(settings_local_path(workstation))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("autoMemoryDirectory").and_then(|x| x.as_str()).map(|s| !s.is_empty()))
+        .unwrap_or(false)
+}
+
+/// enabled=true면 autoMemoryDirectory를 <workstation>/memory로 설정, false면 키 삭제(기존 위치로).
+/// settings.local.json의 다른 키는 보존한다.
+#[tauri::command]
+fn set_memory_local(workstation: &str, enabled: bool) -> Result<(), String> {
+    let path = settings_local_path(workstation);
+    let mut v: serde_json::Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    let obj = v.as_object_mut().unwrap();
+    if enabled {
+        // Claude Code는 Windows에서도 '/'를 받아들인다. 슬래시를 통일해 둔다.
+        let dir = PathBuf::from(workstation).join("memory").to_string_lossy().replace('\\', "/");
+        obj.insert("autoMemoryDirectory".into(), serde_json::Value::String(dir));
+    } else {
+        obj.remove("autoMemoryDirectory");
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+/// 전역 Claude 폴더(~/.claude) 절대경로. 글로벌 창이 CLAUDE.md·메모리 경로를 만들 때 쓴다.
+#[tauri::command]
+fn claude_home() -> Result<String, String> {
+    Ok(home_dir()?.join(".claude").to_string_lossy().replace('\\', "/"))
+}
+
 /// Native folder picker. Runs off the main thread (commands do), so blocking is fine.
 #[tauri::command]
 fn pick_folder(app: tauri::AppHandle) -> Option<String> {
@@ -165,6 +215,9 @@ pub fn run() {
             list_components,
             save_components,
             import_memory,
+            memory_local_enabled,
+            set_memory_local,
+            claude_home,
             pick_folder
         ])
         .run(tauri::generate_context!())
@@ -203,5 +256,23 @@ mod tests {
         assert_eq!(copy_files(&base.join("nope"), &dst).unwrap(), 0);
 
         fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn memory_local_toggle_roundtrip() {
+        let ws = std::env::temp_dir().join("ws_local_toggle_test");
+        fs::remove_dir_all(&ws).ok();
+        fs::create_dir_all(&ws).unwrap();
+        let ws = ws.to_str().unwrap();
+
+        assert!(!memory_local_enabled(ws)); // 파일 없음 → 기존
+        set_memory_local(ws, true).unwrap();
+        assert!(memory_local_enabled(ws)); // 여기
+        let s = fs::read_to_string(settings_local_path(ws)).unwrap();
+        assert!(s.contains("/memory"));
+        set_memory_local(ws, false).unwrap();
+        assert!(!memory_local_enabled(ws)); // 다시 기존(키 삭제)
+
+        fs::remove_dir_all(ws).ok();
     }
 }

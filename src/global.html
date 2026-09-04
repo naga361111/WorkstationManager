@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>글로벌 Claude 설정</title>
+    <script src="/marked.min.js"></script>
+    <script type="module" src="/global.js" defer></script>
+  </head>
+  <body>
+    <!-- 전역(~/.claude) CLAUDE.md·메모리 관리. 편집/디테일 패널은 메인 창과 동일한 공유 모듈. -->
+    <div class="gapp">
+      <nav class="bar2" id="g-bar"></nav>
+      <div class="workspace gwork">
+        <section class="panel">
+          <div class="dock-tabs">
+            <span class="dock-tab active">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/></svg>
+              편집
+            </span>
+          </div>
+          <div class="panel-body" id="g-edit"></div>
+        </section>
+        <section class="panel">
+          <div class="dock-tabs">
+            <span class="dock-tab active">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+              디테일
+            </span>
+          </div>
+          <div class="panel-body" id="g-detail"></div>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>
