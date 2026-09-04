@@ -6,5 +6,9 @@
   {
     "name": "Studio-Asteria",
     "path": "C:\\Projects\\Unreal\\Asteria"
+  },
+  {
+    "name": "Studio-Workstation",
+    "path": "C:\\Projects\\Tool\\Workstation"
   }
 ]
