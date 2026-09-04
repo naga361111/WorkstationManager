@@ -1,6 +1,7 @@
 // 워크스테이션 = 이름 + 실제 폴더 경로.
 // 목록은 앱 실행 파일 옆의 workstations.json에 저장(Rust)하고, 여기서 순회해 렌더링한다.
 import { createPanels } from "./panels.js";
+import { hookFields } from "./hookform.js";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -23,6 +24,9 @@ const CLAUDE_ITEMS = [
 
 // 플러그인 탭 key. CLAUDE_ITEMS와 달리 파일 존재와 무관하게 항상 뜬다(플러그인은 전역 설치).
 const PLUGINS_TAB = "plugins";
+
+// 훅 탭 key. 파일 존재와 무관하게 항상 뜬다. (아직 자리표시만; 기능 미구현)
+const HOOKS_TAB = "hooks";
 
 let workstations = [];
 let selected = 0;
@@ -105,7 +109,7 @@ async function renderBar2() {
   const items = CLAUDE_ITEMS.filter((_, i) => present[i]);
 
   // 활성 탭이 없거나 사라졌으면 첫 탭으로(플러그인 탭도 유효한 선택으로 인정).
-  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB);
+  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB, HOOKS_TAB);
   if (!validKeys.includes(activeTab)) activeTab = items[0]?.key ?? PLUGINS_TAB;
 
   items.forEach((it) => {
@@ -126,6 +130,13 @@ async function renderBar2() {
   ptab.onclick = () => { activeTab = PLUGINS_TAB; renderBar2(); };
   bar2.appendChild(ptab);
 
+  // 훅 탭: 항상 표시. (자리표시만)
+  const htab = document.createElement("button");
+  htab.className = "tab" + (activeTab === HOOKS_TAB ? " active" : "");
+  htab.textContent = "훅";
+  htab.onclick = () => { activeTab = HOOKS_TAB; renderBar2(); };
+  bar2.appendChild(htab);
+
   const missing = CLAUDE_ITEMS.filter((_, i) => !present[i]);
   if (missing.length > 0) {
     const add = document.createElement("button");
@@ -143,6 +154,7 @@ async function renderBar2() {
 async function renderPanels() {
   const ws = workstations[selected];
   if (activeTab === PLUGINS_TAB) return renderPlugins(ws);
+  if (activeTab === HOOKS_TAB) return renderHooks(ws);
   const item = CLAUDE_ITEMS.find((it) => it.key === activeTab);
   await panels.render(ws, item);
 }
@@ -187,6 +199,131 @@ async function renderPlugins(ws) {
   detailBody.innerHTML =
     '<div style="padding:12px"><div class="wsm-label" style="margin-bottom:6px">플러그인</div>' +
     '<p class="empty" style="margin:0">이 워크스테이션의 .claude/settings.local.json에만 반영됩니다. 다음 세션부터 적용됩니다.</p></div>';
+}
+
+const HOOK_ICON =
+  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>';
+
+// 훅 탭: 편집=이 워크스테이션에 등록된 훅 목록/편집(settings.local.json), 디테일=저장소에서 복사.
+// 스킬/메모리 탭과 같은 목록→편집 이동 방식. 저장은 목록 전체를 한 번에 반영.
+async function renderHooks(ws) {
+  editBody.innerHTML = "";
+  detailBody.innerHTML = "";
+  if (!ws) {
+    editBody.innerHTML = '<p class="empty">워크스테이션을 선택하세요.</p>';
+    return;
+  }
+  let hooks = await invoke("list_project_hooks", { workstation: ws.path }).catch(() => []);
+  const saveAll = () => invoke("save_project_hooks", { workstation: ws.path, hooks });
+  const rowLabel = (h) => h.event + (h.matcher ? " · " + h.matcher : "");
+
+  function showList() {
+    editBody.innerHTML = "";
+    if (hooks.length === 0) {
+      editBody.innerHTML = '<p class="empty">등록된 훅이 없습니다.</p>';
+    } else {
+      const ul = document.createElement("div");
+      ul.className = "dirlist";
+      hooks.forEach((h, i) => {
+        const pick = document.createElement("button");
+        pick.className = "dirrow pick";
+        pick.textContent = rowLabel(h);
+        pick.onclick = () => openHook(i);
+        const del = document.createElement("button");
+        del.className = "btn dirrow-del";
+        del.textContent = "삭제";
+        del.onclick = async () => {
+          if (!confirm("이 훅을 삭제할까요?")) return;
+          hooks.splice(i, 1);
+          await saveAll();
+          showList();
+        };
+        const wrap = document.createElement("div");
+        wrap.className = "dirrow-row";
+        wrap.append(pick, del);
+        ul.appendChild(wrap);
+      });
+      editBody.appendChild(ul);
+    }
+    renderHooksDetail();
+  }
+
+  function openHook(i) {
+    editBody.innerHTML = "";
+    detailBody.innerHTML = ""; // 단일 편집 중엔 디테일 비움
+    const back = document.createElement("button");
+    back.className = "btn editor-back";
+    back.textContent = "← 목록";
+    back.onclick = showList;
+
+    const box = document.createElement("div");
+    box.className = "comp-edit";
+    box.style.padding = "10px";
+    hookFields(box, hooks[i], () => {}, { showTitle: false }); // 프로젝트엔 저장소 라벨 불필요
+
+    const save = document.createElement("button");
+    save.className = "btn primary editor-save";
+    save.textContent = "저장";
+    save.onclick = async () => {
+      if (!hooks[i].command.trim()) return alert("command를 입력하세요.");
+      await saveAll();
+    };
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "삭제";
+    del.onclick = async () => {
+      hooks.splice(i, 1);
+      await saveAll();
+      showList();
+    };
+    const actions = document.createElement("div");
+    actions.className = "editor-actions";
+    actions.append(del, save);
+    editBody.append(back, box, actions);
+  }
+
+  // 디테일: 저장소(hooks.json)의 훅을 이 워크스테이션에 복사. title은 떼고 실제 훅만 넣는다.
+  async function renderHooksDetail() {
+    detailBody.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.padding = "12px";
+    const label = document.createElement("div");
+    label.className = "wsm-label";
+    label.style.marginBottom = "6px";
+    label.textContent = "저장소에서 가져오기";
+    const desc = document.createElement("p");
+    desc.className = "empty";
+    desc.style.margin = "0 0 10px";
+    desc.textContent = "정의해 둔 훅을 이 워크스테이션에 복사합니다. (.claude/settings.local.json)";
+    wrap.append(label, desc);
+
+    const repo = await invoke("list_hooks").catch(() => []);
+    if (repo.length === 0) {
+      const none = document.createElement("p");
+      none.className = "empty";
+      none.style.margin = "0";
+      none.textContent = "저장된 훅이 없습니다. 상단바 ‘훅’에서 정의하세요.";
+      wrap.appendChild(none);
+    }
+    repo.forEach((r) => {
+      const row = document.createElement("button");
+      row.className = "listrow";
+      row.title = r.command;
+      row.innerHTML = HOOK_ICON +
+        '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
+      row.querySelector(".lr-name").textContent = r.title || rowLabel(r);
+      row.querySelector(".lr-sub").textContent = rowLabel(r);
+      row.onclick = async () => {
+        hooks.push({ title: "", event: r.event, matcher: r.matcher, command: r.command, timeout: r.timeout ?? null });
+        await saveAll();
+        showList(); // 왼쪽 목록에 즉시 반영
+      };
+      wrap.appendChild(row);
+    });
+    detailBody.appendChild(wrap);
+  }
+
+  showList();
 }
 
 // 메모리 탭 디테일: 자동 메모리 위치 토글(기존 ↔ 여기) + 기존 메모리 복사.
@@ -337,6 +474,24 @@ document.getElementById("skill-toggle").onclick = async () => {
   new WebviewWindow("skills", {
     url: "skills.html",
     title: "스킬 저장소",
+    width: 900,
+    height: 640,
+    minWidth: 560,
+    minHeight: 400,
+  });
+};
+
+// ── 훅 관리 ──────────────────────────────────────────
+// 훅 설정을 관리하는 독립 창(자리표시). 기능은 추후 채운다.
+document.getElementById("hook-toggle").onclick = async () => {
+  const existing = await WebviewWindow.getByLabel("hooks");
+  if (existing) {
+    await existing.setFocus();
+    return;
+  }
+  new WebviewWindow("hooks", {
+    url: "hooks.html",
+    title: "훅 관리",
     width: 900,
     height: 640,
     minWidth: 560,

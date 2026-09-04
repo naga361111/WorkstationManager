@@ -1,0 +1,13 @@
+{
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "command": "mkdir success",
+          "title": "TestHook",
+          "type": "command"
+        }
+      ]
+    }
+  ]
+}

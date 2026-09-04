@@ -104,9 +104,9 @@ function renderEdit() {
   syncSave(); // 새로 만든 버튼에 현재 변경 상태 반영
 }
 
-// 저장 커맨드의 인자 이름(components/skills)은 저장소마다 다르다. Rust 시그니처와 맞춘다.
+// 저장 커맨드의 인자 이름은 저장소 이름과 같다(components/skills/hooks). Rust 시그니처와 맞춘다.
 function storeArg() {
-  return document.body.dataset.store === "skills" ? { skills: items } : { components: items };
+  return { [document.body.dataset.store]: items };
 }
 
 // 편집 중 목록의 이름/설명만 갱신(에디터는 다시 그리지 않아 포커스 유지).

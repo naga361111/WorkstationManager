@@ -133,6 +133,144 @@ fn save_skills(skills: Vec<Component>) -> Result<(), String> {
     fs::write(store_path("skills.json")?, json).map_err(|e| e.to_string())
 }
 
+/// 훅 하나(편집용 평면 표현). 저장 파일은 이걸 Claude 훅 양식으로 조립해 담는다.
+/// matcher="" 는 매처 없음(=전체). timeout=None 이면 저장 시 생략.
+/// title 은 저장소에서 구분용 라벨(Claude 스펙 아님). 실제 프로젝트로 가져갈 땐 떼어낸다.
+#[derive(Serialize, Deserialize, Clone)]
+struct HookEntry {
+    #[serde(default)]
+    title: String,
+    event: String,
+    matcher: String,
+    command: String,
+    #[serde(default)]
+    timeout: Option<u64>,
+}
+
+/// 평면 목록 → Claude 훅 양식(이벤트 → [{matcher?, hooks:[{type,command,timeout?}]}]).
+/// 같은 이벤트+matcher는 한 그룹으로 합쳐 hooks 배열에 명령을 쌓는다.
+fn compose_hooks(entries: &[HookEntry]) -> serde_json::Value {
+    use serde_json::{json, Map, Value};
+    let mut root = Map::new();
+    for e in entries {
+        let cmd = {
+            let mut m = Map::new();
+            m.insert("type".into(), json!("command"));
+            m.insert("command".into(), json!(e.command));
+            if let Some(t) = e.timeout {
+                m.insert("timeout".into(), json!(t));
+            }
+            // 저장소 구분용 라벨. Claude 스펙 아님 → 프로젝트로 가져갈 때 제거한다.
+            if !e.title.is_empty() {
+                m.insert("title".into(), json!(e.title));
+            }
+            Value::Object(m)
+        };
+        let arr = root
+            .entry(e.event.clone())
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap();
+        // 같은 matcher 그룹이 있으면 그 hooks에 추가, 없으면 새 그룹.
+        match arr
+            .iter_mut()
+            .find(|g| g.get("matcher").and_then(|x| x.as_str()).unwrap_or("") == e.matcher)
+        {
+            Some(g) => g.get_mut("hooks").and_then(|h| h.as_array_mut()).unwrap().push(cmd),
+            None => {
+                let mut g = Map::new();
+                if !e.matcher.is_empty() {
+                    g.insert("matcher".into(), json!(e.matcher));
+                }
+                g.insert("hooks".into(), json!([cmd]));
+                arr.push(Value::Object(g));
+            }
+        }
+    }
+    Value::Object(root)
+}
+
+/// Claude 훅 양식 → 평면 목록(편집용). compose의 역변환.
+fn decompose_hooks(v: &serde_json::Value) -> Vec<HookEntry> {
+    let mut out = vec![];
+    let Some(obj) = v.as_object() else { return out };
+    for (event, groups) in obj {
+        let Some(arr) = groups.as_array() else { continue };
+        for g in arr {
+            let matcher = g.get("matcher").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let Some(hooks) = g.get("hooks").and_then(|h| h.as_array()) else { continue };
+            for h in hooks {
+                out.push(HookEntry {
+                    title: h.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    event: event.clone(),
+                    matcher: matcher.clone(),
+                    command: h.get("command").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    timeout: h.get("timeout").and_then(|x| x.as_u64()),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 훅 저장소(hooks.json)를 편집용 평면 목록으로 읽는다. 파일은 실제 훅 양식으로 저장돼 있다.
+#[tauri::command]
+fn list_hooks() -> Result<Vec<HookEntry>, String> {
+    match fs::read_to_string(store_path("hooks.json")?) {
+        Ok(s) => {
+            let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+            Ok(decompose_hooks(&v))
+        }
+        Err(_) => Ok(vec![]),
+    }
+}
+
+/// 평면 목록을 Claude 훅 양식으로 조립해 hooks.json에 저장한다.
+#[tauri::command]
+fn save_hooks(hooks: Vec<HookEntry>) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&compose_hooks(&hooks)).map_err(|e| e.to_string())?;
+    fs::write(store_path("hooks.json")?, json).map_err(|e| e.to_string())
+}
+
+/// 이 워크스테이션에 등록된 훅을 편집용 평면 목록으로 읽는다.
+/// Claude가 읽는 로컬 레벨(.claude/settings.local.json)의 hooks 키를 본다.
+#[tauri::command]
+fn list_project_hooks(workstation: &str) -> Result<Vec<HookEntry>, String> {
+    let v: serde_json::Value = fs::read_to_string(settings_local_path(workstation))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(decompose_hooks(v.get("hooks").unwrap_or(&serde_json::Value::Null)))
+}
+
+/// 평면 목록을 Claude 훅 양식으로 조립해 settings.local.json의 hooks에 쓴다(다른 키 보존).
+/// title은 Claude 스펙 아니므로 실제 파일엔 남기지 않는다. 목록이 비면 hooks 키를 지운다.
+#[tauri::command]
+fn save_project_hooks(workstation: &str, mut hooks: Vec<HookEntry>) -> Result<(), String> {
+    let path = settings_local_path(workstation);
+    let mut v: serde_json::Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    let obj = v.as_object_mut().unwrap();
+    if hooks.is_empty() {
+        obj.remove("hooks");
+    } else {
+        for h in &mut hooks {
+            h.title.clear(); // 실제 파일엔 저장소 라벨을 남기지 않는다
+        }
+        obj.insert("hooks".into(), compose_hooks(&hooks));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
 // ── 메모리 가져오기 ──────────────────────────────────
 // Claude 기본 메모리 폴더(~/.claude/projects/<인코딩>/memory)의 파일을 <워크스테이션>/memory로 복사.
 
@@ -404,6 +542,10 @@ pub fn run() {
             save_components,
             list_skills,
             save_skills,
+            list_hooks,
+            save_hooks,
+            list_project_hooks,
+            save_project_hooks,
             import_memory,
             memory_local_enabled,
             set_memory_local,
@@ -468,6 +610,36 @@ mod tests {
         assert!(!memory_local_enabled(ws)); // 다시 기존(키 삭제)
 
         fs::remove_dir_all(ws).ok();
+    }
+
+    #[test]
+    fn hooks_compose_groups_and_formats() {
+        let entries = vec![
+            HookEntry { title: "포맷터".into(), event: "PreToolUse".into(), matcher: "Bash".into(), command: "a".into(), timeout: Some(30) },
+            HookEntry { title: "".into(), event: "PreToolUse".into(), matcher: "Bash".into(), command: "b".into(), timeout: None },
+            HookEntry { title: "끝알림".into(), event: "Stop".into(), matcher: "".into(), command: "c".into(), timeout: None },
+        ];
+        let v = compose_hooks(&entries);
+        // 같은 이벤트+matcher는 한 그룹, hooks 배열에 두 명령.
+        let bash = &v["PreToolUse"][0];
+        assert_eq!(bash["matcher"], "Bash");
+        assert_eq!(bash["hooks"].as_array().unwrap().len(), 2);
+        assert_eq!(bash["hooks"][0]["type"], "command");
+        assert_eq!(bash["hooks"][0]["timeout"], 30);
+        assert_eq!(bash["hooks"][0]["title"], "포맷터"); // 라벨은 명령 항목에 실린다
+        assert!(bash["hooks"][1].get("timeout").is_none()); // None이면 생략
+        assert!(bash["hooks"][1].get("title").is_none()); // 빈 title도 생략
+        // matcher 없는 이벤트는 matcher 키 자체가 없어야 한다.
+        assert!(v["Stop"][0].get("matcher").is_none());
+
+        // 왕복: 분해하면 원래 항목 수/내용이 보존된다.
+        let back = decompose_hooks(&v);
+        assert_eq!(back.len(), 3);
+        assert_eq!(back[0].title, "포맷터");
+        assert_eq!(back[0].event, "PreToolUse");
+        assert_eq!(back[0].command, "a");
+        assert_eq!(back[0].timeout, Some(30));
+        assert_eq!(back[2].matcher, ""); // 없음 → 빈 문자열
     }
 
     #[test]
