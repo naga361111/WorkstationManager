@@ -1,0 +1,37 @@
+/* Workstation Manager — design tokens & base type.  (from @wsm/ui, verbatim)
+   Cool slate structure, one warm amber accent, green/red for semantics only. */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #0d0f13;
+  --panel: #14171d;
+  --panel-2: #1c2029;
+  --ink: #e8eaf0;
+  --muted: #868d9b;
+  --faint: #4e5460;
+  --rule: rgba(232, 234, 240, 0.08);
+  --rule-2: rgba(232, 234, 240, 0.16);
+  --accent: #e2a24e;
+  --add: #59b98a;
+  --del: #e56b7c;
+  --on-accent: #17140f;
+}
+
+body {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.wsm-mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+
+.wsm-label {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}

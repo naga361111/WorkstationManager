@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Workstation</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <div class="app">
+      <!-- ── Bar 1 · 1차: 워크스테이션 ───────────────────── -->
+      <header class="bar1">
+        <div class="brand">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M12 2l8.7 5v10L12 22l-8.7-5V7z"/></svg>
+          <span class="brand-name">Workstation</span>
+        </div>
+        <nav class="bar-nav"></nav>
+        <div class="bar-actions">
+          <button class="btn primary">적용</button>
+        </div>
+      </header>
+
+      <!-- ── Bar 2 · 2차: Claude 파일(루트 경로의 존재 여부로 렌더) ── -->
+      <nav class="bar2" id="bar2"></nav>
+
+      <!-- ── 도킹 3패널: 좌 선택 / 중 편집 / 우 디테일 (구조만) ── -->
+      <div class="workspace">
+        <section class="panel">
+          <div class="dock-tabs">
+            <span class="dock-tab active">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M12 2l8.7 5v10L12 22l-8.7-5V7z"/></svg>
+              워크스테이션
+            </span>
+          </div>
+          <div class="panel-body">
+            <div class="ws-list" id="ws-list"></div>
+            <button class="addrow" id="ws-add">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              워크스테이션 추가
+            </button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="dock-tabs">
+            <span class="dock-tab active">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/></svg>
+              편집
+            </span>
+          </div>
+          <div class="panel-body" id="edit-body"></div>
+        </section>
+
+        <section class="panel">
+          <div class="dock-tabs">
+            <span class="dock-tab active">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+              디테일
+            </span>
+          </div>
+          <div class="panel-body" id="detail-body"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 워크스테이션 추가 모달 -->
+    <div class="modal-scrim" id="ws-modal" hidden>
+      <div class="modal">
+        <h2 class="modal-title">워크스테이션 추가</h2>
+        <label class="field">
+          <span class="field-label">이름</span>
+          <input class="field-input" id="ws-name" type="text" placeholder="예: Frontend Dev" />
+        </label>
+        <label class="field">
+          <span class="field-label">폴더 경로</span>
+          <div class="field-row">
+            <input class="field-input" id="ws-path" type="text" placeholder="폴더를 선택하세요" readonly />
+            <button class="btn" id="ws-pick">폴더 선택</button>
+          </div>
+        </label>
+        <div class="modal-actions">
+          <button class="btn" id="ws-cancel">취소</button>
+          <button class="btn primary" id="ws-save">추가</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
