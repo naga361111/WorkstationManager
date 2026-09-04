@@ -1,5 +1,6 @@
 // 제목+설명+내용 목록을 CRUD하는 독립 저장소 창. 컴포넌트/스킬이 공유한다.
 // 어떤 저장소인지는 <body data-store="components|skills"> 로 정한다. 목록 전체를 통째로 저장한다.
+import { frontmatterFields } from "./cmdform.js";
 const { invoke } = window.__TAURI__.core;
 const { emit } = window.__TAURI__.event;
 
@@ -8,6 +9,12 @@ const CONFIG = {
     add: "컴포넌트 추가", empty: "왼쪽에서 컴포넌트를 선택하거나 추가하세요." },
   skills: { list: "list_skills", save: "save_skills", event: "skills-changed",
     add: "스킬 추가", empty: "왼쪽에서 스킬을 선택하거나 추가하세요." },
+  slashcommands: { list: "list_slashcommands", save: "save_slashcommands", event: "slashcommands-changed",
+    add: "커맨드 추가", empty: "왼쪽에서 슬래시 커맨드를 선택하거나 추가하세요.",
+    labels: { title: "커맨드 이름 (파일명 → /이름)", description: "설명 (description)", content: "본문 (프롬프트)" },
+    // 프론트매터로 나갈 선택 필드. renderEdit가 설명과 본문 사이에 끼워 넣는다.
+    extra: frontmatterFields,
+  },
 };
 const cfg = CONFIG[document.body.dataset.store];
 
@@ -67,6 +74,9 @@ function renderEdit() {
   desc.value = c.description;
   desc.oninput = () => { c.description = desc.value; renderRow(); syncSave(); };
 
+  const L = cfg.labels || {};
+  const extraFields = (cfg.extra?.(c, syncSave) || []).map(([label, el]) => field(label, el));
+
   const content = document.createElement("textarea");
   content.className = "editor comp-content";
   content.value = c.content;
@@ -94,9 +104,10 @@ function renderEdit() {
   actions.append(del, save);
 
   compEditEl.append(
-    field("제목", title),
-    field("설명", desc),
-    field("내용", content),
+    field(L.title || "제목", title),
+    field(L.description || "설명", desc),
+    ...extraFields,
+    field(L.content || "내용", content),
     actions
   );
 

@@ -1,0 +1,10 @@
+[
+  {
+    "title": "To10",
+    "description": "인자를 십진수로 변환",
+    "argumentHint": "[Number]",
+    "allowedTools": "",
+    "model": "",
+    "content": "$ARGUMENT 를 십진수로 변환해서 출력해줘,"
+  }
+]

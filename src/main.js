@@ -2,6 +2,7 @@
 // 목록은 앱 실행 파일 옆의 workstations.json에 저장(Rust)하고, 여기서 순회해 렌더링한다.
 import { createPanels } from "./panels.js";
 import { hookFields } from "./hookform.js";
+import { cmdFields } from "./cmdform.js";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -27,6 +28,9 @@ const PLUGINS_TAB = "plugins";
 
 // 훅 탭 key. 파일 존재와 무관하게 항상 뜬다. (아직 자리표시만; 기능 미구현)
 const HOOKS_TAB = "hooks";
+
+// 슬래시 커맨드 탭 key. 항상 뜬다. 편집=로컬 .claude/commands/*.md, 디테일=저장소에서 복사.
+const SLASH_TAB = "slashcommands";
 
 let workstations = [];
 let selected = 0;
@@ -109,7 +113,7 @@ async function renderBar2() {
   const items = CLAUDE_ITEMS.filter((_, i) => present[i]);
 
   // 활성 탭이 없거나 사라졌으면 첫 탭으로(플러그인 탭도 유효한 선택으로 인정).
-  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB, HOOKS_TAB);
+  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB, HOOKS_TAB, SLASH_TAB);
   if (!validKeys.includes(activeTab)) activeTab = items[0]?.key ?? PLUGINS_TAB;
 
   items.forEach((it) => {
@@ -137,6 +141,13 @@ async function renderBar2() {
   htab.onclick = () => { activeTab = HOOKS_TAB; renderBar2(); };
   bar2.appendChild(htab);
 
+  // 슬래시 커맨드 탭: 항상 표시.
+  const stab = document.createElement("button");
+  stab.className = "tab" + (activeTab === SLASH_TAB ? " active" : "");
+  stab.textContent = "슬래시 커맨드";
+  stab.onclick = () => { activeTab = SLASH_TAB; renderBar2(); };
+  bar2.appendChild(stab);
+
   const missing = CLAUDE_ITEMS.filter((_, i) => !present[i]);
   if (missing.length > 0) {
     const add = document.createElement("button");
@@ -155,6 +166,7 @@ async function renderPanels() {
   const ws = workstations[selected];
   if (activeTab === PLUGINS_TAB) return renderPlugins(ws);
   if (activeTab === HOOKS_TAB) return renderHooks(ws);
+  if (activeTab === SLASH_TAB) return renderSlashCommands(ws);
   const item = CLAUDE_ITEMS.find((it) => it.key === activeTab);
   await panels.render(ws, item);
 }
@@ -326,6 +338,146 @@ async function renderHooks(ws) {
   showList();
 }
 
+const SLASH_ICON =
+  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>';
+
+// 슬래시 커맨드 탭: 편집=이 워크스테이션의 .claude/commands/*.md 목록/편집, 디테일=저장소에서 복사.
+// 훅 탭과 동일한 흐름. 커맨드는 파일 하나 = 한 항목(파일명=이름)이라 저장/삭제는 파일 단위.
+async function renderSlashCommands(ws) {
+  editBody.innerHTML = "";
+  detailBody.innerHTML = "";
+  if (!ws) {
+    editBody.innerHTML = '<p class="empty">워크스테이션을 선택하세요.</p>';
+    return;
+  }
+  let cmds = await invoke("list_project_slashcommands", { workstation: ws.path }).catch(() => []);
+  const reload = async () => {
+    cmds = await invoke("list_project_slashcommands", { workstation: ws.path }).catch(() => []);
+  };
+  const rowLabel = (c) => "/" + c.title + (c.description ? " · " + c.description : "");
+
+  function showList() {
+    editBody.innerHTML = "";
+    if (cmds.length === 0) {
+      editBody.innerHTML = '<p class="empty">로컬에 슬래시 커맨드가 없습니다. 오른쪽에서 가져오세요.</p>';
+    } else {
+      const ul = document.createElement("div");
+      ul.className = "dirlist";
+      cmds.forEach((c, i) => {
+        const pick = document.createElement("button");
+        pick.className = "dirrow pick";
+        pick.textContent = rowLabel(c);
+        pick.onclick = () => openCommand(i);
+        const del = document.createElement("button");
+        del.className = "btn dirrow-del";
+        del.textContent = "삭제";
+        del.onclick = async () => {
+          if (!confirm("‘/" + c.title + "’ 커맨드 파일을 삭제할까요?")) return;
+          await invoke("delete_project_slashcommand", { workstation: ws.path, title: c.title });
+          await reload();
+          showList();
+        };
+        const wrap = document.createElement("div");
+        wrap.className = "dirrow-row";
+        wrap.append(pick, del);
+        ul.appendChild(wrap);
+      });
+      editBody.appendChild(ul);
+    }
+    renderSlashDetail();
+  }
+
+  function openCommand(i) {
+    const orig = cmds[i].title; // 이름이 바뀌면 저장 시 옛 파일 삭제
+    const draft = { ...cmds[i] }; // 저장 전까진 디스크에 손대지 않음
+    editBody.innerHTML = "";
+    detailBody.innerHTML = ""; // 단일 편집 중엔 디테일 비움
+    const back = document.createElement("button");
+    back.className = "btn editor-back";
+    back.textContent = "← 목록";
+    back.onclick = showList;
+
+    const box = document.createElement("div");
+    box.className = "comp-edit";
+    box.style.padding = "10px";
+    cmdFields(box, draft, () => {});
+
+    const save = document.createElement("button");
+    save.className = "btn primary editor-save";
+    save.textContent = "저장";
+    save.onclick = async () => {
+      if (!draft.title.trim()) return alert("커맨드 이름을 입력하세요.");
+      try {
+        await invoke("save_project_slashcommand", { workstation: ws.path, command: draft, orig });
+      } catch (e) {
+        return alert("저장 실패: " + e);
+      }
+      await reload();
+      showList();
+    };
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "삭제";
+    del.onclick = async () => {
+      await invoke("delete_project_slashcommand", { workstation: ws.path, title: orig });
+      await reload();
+      showList();
+    };
+    const actions = document.createElement("div");
+    actions.className = "editor-actions";
+    actions.append(del, save);
+    editBody.append(back, box, actions);
+  }
+
+  // 디테일: 저장소(slashcommands.json)의 커맨드를 이 워크스테이션의 .claude/commands/로 복사.
+  async function renderSlashDetail() {
+    detailBody.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.padding = "12px";
+    const label = document.createElement("div");
+    label.className = "wsm-label";
+    label.style.marginBottom = "6px";
+    label.textContent = "저장소에서 가져오기";
+    const desc = document.createElement("p");
+    desc.className = "empty";
+    desc.style.margin = "0 0 10px";
+    desc.textContent = "정의해 둔 슬래시 커맨드를 이 워크스테이션에 복사합니다. (.claude/commands/<이름>.md)";
+    wrap.append(label, desc);
+
+    const repo = await invoke("list_slashcommands").catch(() => []);
+    if (repo.length === 0) {
+      const none = document.createElement("p");
+      none.className = "empty";
+      none.style.margin = "0";
+      none.textContent = "저장된 커맨드가 없습니다. 상단바 ‘커맨드’에서 정의하세요.";
+      wrap.appendChild(none);
+    }
+    repo.forEach((r) => {
+      const row = document.createElement("button");
+      row.className = "listrow";
+      row.title = r.description || r.title;
+      row.innerHTML = SLASH_ICON +
+        '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
+      row.querySelector(".lr-name").textContent = "/" + (r.title || "(이름 없음)");
+      row.querySelector(".lr-sub").textContent = r.description || "";
+      row.onclick = async () => {
+        if (!r.title.trim()) return alert("저장소 커맨드에 이름이 없습니다. 상단바 ‘커맨드’에서 이름을 지정하세요.");
+        try {
+          await invoke("save_project_slashcommand", { workstation: ws.path, command: r, orig: null });
+        } catch (e) {
+          return alert("복사 실패: " + e);
+        }
+        await reload();
+        showList(); // 왼쪽 목록에 즉시 반영
+      };
+      wrap.appendChild(row);
+    });
+    detailBody.appendChild(wrap);
+  }
+
+  showList();
+}
+
 // 메모리 탭 디테일: 자동 메모리 위치 토글(기존 ↔ 여기) + 기존 메모리 복사.
 async function renderMemoryDetail(ws, refreshList) {
   detailBody.innerHTML = "";
@@ -474,6 +626,24 @@ document.getElementById("skill-toggle").onclick = async () => {
   new WebviewWindow("skills", {
     url: "skills.html",
     title: "스킬 저장소",
+    width: 900,
+    height: 640,
+    minWidth: 560,
+    minHeight: 400,
+  });
+};
+
+// ── 슬래시 커맨드 관리 ────────────────────────────────
+// 슬래시 커맨드를 컴포넌트/스킬처럼 관리하는 독립 창. (store.js 공유)
+document.getElementById("cmd-toggle").onclick = async () => {
+  const existing = await WebviewWindow.getByLabel("slashcommands");
+  if (existing) {
+    await existing.setFocus();
+    return;
+  }
+  new WebviewWindow("slashcommands", {
+    url: "slashcommands.html",
+    title: "슬래시 커맨드 관리",
     width: 900,
     height: 640,
     minWidth: 560,

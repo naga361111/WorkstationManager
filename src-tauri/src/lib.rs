@@ -133,6 +133,145 @@ fn save_skills(skills: Vec<Component>) -> Result<(), String> {
     fs::write(store_path("skills.json")?, json).map_err(|e| e.to_string())
 }
 
+/// 슬래시 커맨드 = 커스텀 .md 커맨드(제목=파일명, 본문=content).
+/// description/argument-hint/allowed-tools/model 은 프론트매터로 나갈 선택 필드.
+/// 빈 필드는 #[serde(default)] 로 구버전 파일과도 호환.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommand {
+    title: String,
+    description: String,
+    #[serde(default)]
+    argument_hint: String,
+    #[serde(default)]
+    allowed_tools: String,
+    #[serde(default)]
+    model: String,
+    content: String,
+}
+
+#[tauri::command]
+fn list_slashcommands() -> Result<Vec<SlashCommand>, String> {
+    match fs::read_to_string(store_path("slashcommands.json")?) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        Err(_) => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn save_slashcommands(slashcommands: Vec<SlashCommand>) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&slashcommands).map_err(|e| e.to_string())?;
+    fs::write(store_path("slashcommands.json")?, json).map_err(|e| e.to_string())
+}
+
+// ── 프로젝트(로컬) 슬래시 커맨드 ─────────────────────
+// 워크스테이션의 .claude/commands/<이름>.md 를 편집 가능한 SlashCommand 목록으로 다룬다.
+// 파일명(확장자 제외)=title, 프론트매터=description/argument-hint/allowed-tools/model, 나머지=content.
+
+fn commands_dir(workstation: &str) -> PathBuf {
+    PathBuf::from(workstation).join(".claude").join("commands")
+}
+
+/// .md 텍스트를 SlashCommand로 파싱. "---"로 감싼 프론트매터의 알려진 키만 읽는다.
+fn parse_command_md(title: &str, text: &str) -> SlashCommand {
+    let mut cmd = SlashCommand {
+        title: title.to_string(),
+        description: String::new(),
+        argument_hint: String::new(),
+        allowed_tools: String::new(),
+        model: String::new(),
+        content: text.to_string(),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.first().map(|l| l.trim_end()) == Some("---") {
+        if let Some(rel) = lines.iter().skip(1).position(|l| l.trim_end() == "---") {
+            let end = rel + 1; // 닫는 "---" 의 실제 인덱스
+            for line in &lines[1..end] {
+                if let Some((k, v)) = line.split_once(':') {
+                    let v = v.trim().to_string();
+                    match k.trim() {
+                        "description" => cmd.description = v,
+                        "argument-hint" => cmd.argument_hint = v,
+                        "allowed-tools" => cmd.allowed_tools = v,
+                        "model" => cmd.model = v,
+                        _ => {}
+                    }
+                }
+            }
+            cmd.content = lines[end + 1..].join("\n").trim_start().to_string();
+        }
+    }
+    cmd
+}
+
+/// SlashCommand를 .md 텍스트로. 빈 프론트매터 필드는 생략하고, 다 비면 프론트매터 블록도 뺀다.
+fn render_command_md(cmd: &SlashCommand) -> String {
+    let mut fm = String::new();
+    for (k, v) in [
+        ("description", &cmd.description),
+        ("argument-hint", &cmd.argument_hint),
+        ("allowed-tools", &cmd.allowed_tools),
+        ("model", &cmd.model),
+    ] {
+        if !v.trim().is_empty() {
+            fm.push_str(&format!("{k}: {v}\n"));
+        }
+    }
+    if fm.is_empty() {
+        cmd.content.clone()
+    } else {
+        format!("---\n{fm}---\n\n{}", cmd.content)
+    }
+}
+
+#[tauri::command]
+fn list_project_slashcommands(workstation: &str) -> Result<Vec<SlashCommand>, String> {
+    let dir = commands_dir(workstation);
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut out = vec![];
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let title = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            out.push(parse_command_md(&title, &text));
+        }
+    }
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(out)
+}
+
+/// 커맨드 하나를 <ws>/.claude/commands/<title>.md 로 저장. orig가 다르면(이름 변경) 옛 파일 삭제.
+#[tauri::command]
+fn save_project_slashcommand(workstation: &str, command: SlashCommand, orig: Option<String>) -> Result<(), String> {
+    let title = command.title.trim();
+    if title.is_empty() {
+        return Err("커맨드 이름이 필요합니다.".into());
+    }
+    if title.contains(['/', '\\']) {
+        return Err("커맨드 이름에 경로 구분자(/ \\)를 쓸 수 없습니다.".into());
+    }
+    let dir = commands_dir(workstation);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if let Some(orig) = orig {
+        if !orig.is_empty() && orig != title {
+            let _ = fs::remove_file(dir.join(format!("{orig}.md")));
+        }
+    }
+    fs::write(dir.join(format!("{title}.md")), render_command_md(&command)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_project_slashcommand(workstation: &str, title: &str) -> Result<(), String> {
+    let path = commands_dir(workstation).join(format!("{title}.md"));
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 훅 하나(편집용 평면 표현). 저장 파일은 이걸 Claude 훅 양식으로 조립해 담는다.
 /// matcher="" 는 매처 없음(=전체). timeout=None 이면 저장 시 생략.
 /// title 은 저장소에서 구분용 라벨(Claude 스펙 아님). 실제 프로젝트로 가져갈 땐 떼어낸다.
@@ -542,6 +681,11 @@ pub fn run() {
             save_components,
             list_skills,
             save_skills,
+            list_slashcommands,
+            save_slashcommands,
+            list_project_slashcommands,
+            save_project_slashcommand,
+            delete_project_slashcommand,
             list_hooks,
             save_hooks,
             list_project_hooks,

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>슬래시 커맨드 관리</title>
+    <script type="module" src="/store.js" defer></script>
+  </head>
+  <body data-store="slashcommands">
+    <div class="comp-win">
+      <aside class="comp-side">
+        <div class="comp-list" id="comp-list"></div>
+        <button class="addrow" id="comp-add">
+          <svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          커맨드 추가
+        </button>
+      </aside>
+      <div class="comp-edit" id="comp-edit"></div>
+    </div>
+  </body>
+</html>
