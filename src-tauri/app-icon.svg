@@ -1,0 +1,18 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1024" height="1024" rx="220" fill="#1f1f22"/>
+  <rect x="188" y="236" width="648" height="452" rx="40" fill="none" stroke="#e5e5e7" stroke-width="44"/>
+  <!-- 튜닝 슬라이더 3개 -->
+  <g stroke="#e5e5e7" stroke-width="40" stroke-linecap="round">
+    <line x1="300" y1="360" x2="724" y2="360"/>
+    <line x1="300" y1="462" x2="724" y2="462"/>
+    <line x1="300" y1="564" x2="724" y2="564"/>
+  </g>
+  <g fill="#d97757">
+    <circle cx="420" cy="360" r="46"/>
+    <circle cx="628" cy="462" r="46"/>
+    <circle cx="380" cy="564" r="46"/>
+  </g>
+  <!-- 스탠드 -->
+  <rect x="472" y="688" width="80" height="72" fill="#e5e5e7"/>
+  <rect x="372" y="748" width="280" height="44" rx="22" fill="#e5e5e7"/>
+</svg>
