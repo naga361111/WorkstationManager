@@ -11,7 +11,7 @@ It provides a unified control center for managing project workspaces, editing pr
 
 ---
 
-## 🌟 Key Features
+## Key Features
 
 ### 1. Workstation & Session Management
 - **Directory-based Workspaces**: Register multiple repositories or project directories with friendly aliases.
@@ -59,7 +59,7 @@ It provides a unified control center for managing project workspaces, editing pr
 
 ---
 
-## 🖥️ User Interface Overview
+## User Interface Overview
 
 Workstation utilizes a sleek, 3-panel docking layout:
 
@@ -71,9 +71,9 @@ Workstation utilizes a sleek, 3-panel docking layout:
 +-------------------+-----------------------------+-----------------------+
 |  Workstations     |  Editor Panel               |  Detail / Inspector   |
 |                   |                             |                       |
-|  * Project A [▶]  |  - Real-time Markdown       |  - Component Picker   |
-|  * Project B [▶]  |    or YAML Frontmatter Form |  - Skill / Command    |
-|  * Project C [▶]  |  - Save & Live Preview      |    Store Sync         |
+|  * Project A [Run]|  - Real-time Markdown       |  - Component Picker   |
+|  * Project B [Run]|    or YAML Frontmatter Form |  - Skill / Command    |
+|  * Project C [Run]|  - Save & Live Preview      |    Store Sync         |
 |                   |                             |  - Metadata Info      |
 |  [+ Add Workst.]  |                             |                       |
 +-------------------+-----------------------------+-----------------------+
@@ -85,7 +85,7 @@ Workstation utilizes a sleek, 3-panel docking layout:
 
 ---
 
-## 🛠️ Architecture & Tech Stack
+## Architecture & Tech Stack
 
 - **Desktop Framework**: [Tauri v2](https://tauri.app/)
 - **Core Backend**: Rust (2021 edition)
@@ -129,7 +129,7 @@ Workstation/
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -177,7 +177,7 @@ The installer bundle will be created under `src-tauri/target/release/bundle/nsis
 
 ---
 
-## ⚙️ Data Storage
+## Data Storage
 
 Application data and central repositories are automatically stored in the standard OS application data directory:
 - **Windows**: `%APPDATA%\com.workstation.app\data\`
@@ -186,7 +186,7 @@ Upon first launch, existing default templates from `data/` are copied over to th
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions, bug reports, and feature requests are welcome! Feel free to check the issues page or submit a pull request.
 
@@ -198,6 +198,6 @@ Contributions, bug reports, and feature requests are welcome! Feel free to check
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
