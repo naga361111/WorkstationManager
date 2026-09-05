@@ -1,0 +1,11 @@
+[
+  {
+    "title": "Test",
+    "description": "Test",
+    "transport": "",
+    "command": "npx",
+    "url": "",
+    "env": "",
+    "content": "-y\n@modelcontextprotocol/server-everything"
+  }
+]

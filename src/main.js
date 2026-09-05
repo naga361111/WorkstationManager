@@ -2,7 +2,7 @@
 // 목록은 앱 실행 파일 옆의 workstations.json에 저장(Rust)하고, 여기서 순회해 렌더링한다.
 import { createPanels } from "./panels.js";
 import { hookFields } from "./hookform.js";
-import { cmdFields } from "./cmdform.js";
+import { cmdFields, subagentFormFields, mcpFormFields } from "./cmdform.js";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -31,6 +31,12 @@ const HOOKS_TAB = "hooks";
 
 // 슬래시 커맨드 탭 key. 항상 뜬다. 편집=로컬 .claude/commands/*.md, 디테일=저장소에서 복사.
 const SLASH_TAB = "slashcommands";
+
+// 서브 에이전트 탭 key. 항상 뜬다. 편집=로컬 .claude/agents/*.md, 디테일=저장소에서 복사.
+const AGENTS_TAB = "subagents";
+
+// MCP 탭 key. 항상 뜬다. 편집=로컬 .mcp.json의 mcpServers, 디테일=저장소에서 복사.
+const MCP_TAB = "mcp";
 
 let workstations = [];
 let selected = 0;
@@ -113,7 +119,7 @@ async function renderBar2() {
   const items = CLAUDE_ITEMS.filter((_, i) => present[i]);
 
   // 활성 탭이 없거나 사라졌으면 첫 탭으로(플러그인 탭도 유효한 선택으로 인정).
-  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB, HOOKS_TAB, SLASH_TAB);
+  const validKeys = items.map((it) => it.key).concat(PLUGINS_TAB, HOOKS_TAB, SLASH_TAB, AGENTS_TAB, MCP_TAB);
   if (!validKeys.includes(activeTab)) activeTab = items[0]?.key ?? PLUGINS_TAB;
 
   items.forEach((it) => {
@@ -148,6 +154,20 @@ async function renderBar2() {
   stab.onclick = () => { activeTab = SLASH_TAB; renderBar2(); };
   bar2.appendChild(stab);
 
+  // 서브 에이전트 탭: 항상 표시.
+  const atab = document.createElement("button");
+  atab.className = "tab" + (activeTab === AGENTS_TAB ? " active" : "");
+  atab.textContent = "서브 에이전트";
+  atab.onclick = () => { activeTab = AGENTS_TAB; renderBar2(); };
+  bar2.appendChild(atab);
+
+  // MCP 탭: 항상 표시.
+  const mtab = document.createElement("button");
+  mtab.className = "tab" + (activeTab === MCP_TAB ? " active" : "");
+  mtab.textContent = "MCP";
+  mtab.onclick = () => { activeTab = MCP_TAB; renderBar2(); };
+  bar2.appendChild(mtab);
+
   const missing = CLAUDE_ITEMS.filter((_, i) => !present[i]);
   if (missing.length > 0) {
     const add = document.createElement("button");
@@ -167,6 +187,8 @@ async function renderPanels() {
   if (activeTab === PLUGINS_TAB) return renderPlugins(ws);
   if (activeTab === HOOKS_TAB) return renderHooks(ws);
   if (activeTab === SLASH_TAB) return renderSlashCommands(ws);
+  if (activeTab === AGENTS_TAB) return renderSubagents(ws);
+  if (activeTab === MCP_TAB) return renderProjectMcp(ws);
   const item = CLAUDE_ITEMS.find((it) => it.key === activeTab);
   await panels.render(ws, item);
 }
@@ -478,6 +500,287 @@ async function renderSlashCommands(ws) {
   showList();
 }
 
+const AGENT_ICON =
+  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17.5" cy="10" r="2.5"/><path d="M15 20a5.5 5.5 0 0 1 6.5-4"/></svg>';
+
+// 서브 에이전트 탭: 편집=이 워크스테이션의 .claude/agents/*.md 목록/편집, 디테일=저장소에서 복사.
+// 슬래시 커맨드 탭과 동일한 흐름. 파일 하나 = 한 항목(파일명=name)이라 저장/삭제는 파일 단위.
+async function renderSubagents(ws) {
+  editBody.innerHTML = "";
+  detailBody.innerHTML = "";
+  if (!ws) {
+    editBody.innerHTML = '<p class="empty">워크스테이션을 선택하세요.</p>';
+    return;
+  }
+  let agents = await invoke("list_project_subagents", { workstation: ws.path }).catch(() => []);
+  const reload = async () => {
+    agents = await invoke("list_project_subagents", { workstation: ws.path }).catch(() => []);
+  };
+  const rowLabel = (a) => a.title + (a.description ? " · " + a.description : "");
+
+  function showList() {
+    editBody.innerHTML = "";
+    if (agents.length === 0) {
+      editBody.innerHTML = '<p class="empty">로컬에 서브 에이전트가 없습니다. 오른쪽에서 가져오세요.</p>';
+    } else {
+      const ul = document.createElement("div");
+      ul.className = "dirlist";
+      agents.forEach((a, i) => {
+        const pick = document.createElement("button");
+        pick.className = "dirrow pick";
+        pick.textContent = rowLabel(a);
+        pick.onclick = () => openAgent(i);
+        const del = document.createElement("button");
+        del.className = "btn dirrow-del";
+        del.textContent = "삭제";
+        del.onclick = async () => {
+          if (!confirm("‘" + a.title + "’ 에이전트 파일을 삭제할까요?")) return;
+          await invoke("delete_project_subagent", { workstation: ws.path, title: a.title });
+          await reload();
+          showList();
+        };
+        const wrap = document.createElement("div");
+        wrap.className = "dirrow-row";
+        wrap.append(pick, del);
+        ul.appendChild(wrap);
+      });
+      editBody.appendChild(ul);
+    }
+    renderAgentDetail();
+  }
+
+  function openAgent(i) {
+    const orig = agents[i].title; // 이름이 바뀌면 저장 시 옛 파일 삭제
+    const draft = { ...agents[i] }; // 저장 전까진 디스크에 손대지 않음
+    editBody.innerHTML = "";
+    detailBody.innerHTML = ""; // 단일 편집 중엔 디테일 비움
+    const back = document.createElement("button");
+    back.className = "btn editor-back";
+    back.textContent = "← 목록";
+    back.onclick = showList;
+
+    const box = document.createElement("div");
+    box.className = "comp-edit";
+    box.style.padding = "10px";
+    subagentFormFields(box, draft, () => {});
+
+    const save = document.createElement("button");
+    save.className = "btn primary editor-save";
+    save.textContent = "저장";
+    save.onclick = async () => {
+      if (!draft.title.trim()) return alert("에이전트 이름을 입력하세요.");
+      try {
+        await invoke("save_project_subagent", { workstation: ws.path, subagent: draft, orig });
+      } catch (e) {
+        return alert("저장 실패: " + e);
+      }
+      await reload();
+      showList();
+    };
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "삭제";
+    del.onclick = async () => {
+      await invoke("delete_project_subagent", { workstation: ws.path, title: orig });
+      await reload();
+      showList();
+    };
+    const actions = document.createElement("div");
+    actions.className = "editor-actions";
+    actions.append(del, save);
+    editBody.append(back, box, actions);
+  }
+
+  // 디테일: 저장소(subagents.json)의 에이전트를 이 워크스테이션의 .claude/agents/로 복사.
+  async function renderAgentDetail() {
+    detailBody.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.padding = "12px";
+    const label = document.createElement("div");
+    label.className = "wsm-label";
+    label.style.marginBottom = "6px";
+    label.textContent = "저장소에서 가져오기";
+    const desc = document.createElement("p");
+    desc.className = "empty";
+    desc.style.margin = "0 0 10px";
+    desc.textContent = "정의해 둔 서브 에이전트를 이 워크스테이션에 복사합니다. (.claude/agents/<이름>.md)";
+    wrap.append(label, desc);
+
+    const repo = await invoke("list_subagents").catch(() => []);
+    if (repo.length === 0) {
+      const none = document.createElement("p");
+      none.className = "empty";
+      none.style.margin = "0";
+      none.textContent = "저장된 에이전트가 없습니다. 상단바 ‘서브 에이전트’에서 정의하세요.";
+      wrap.appendChild(none);
+    }
+    repo.forEach((r) => {
+      const row = document.createElement("button");
+      row.className = "listrow";
+      row.title = r.description || r.title;
+      row.innerHTML = AGENT_ICON +
+        '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
+      row.querySelector(".lr-name").textContent = r.title || "(이름 없음)";
+      row.querySelector(".lr-sub").textContent = r.description || "";
+      row.onclick = async () => {
+        if (!r.title.trim()) return alert("저장소 에이전트에 이름이 없습니다. 상단바 ‘서브 에이전트’에서 이름을 지정하세요.");
+        try {
+          await invoke("save_project_subagent", { workstation: ws.path, subagent: r, orig: null });
+        } catch (e) {
+          return alert("복사 실패: " + e);
+        }
+        await reload();
+        showList(); // 왼쪽 목록에 즉시 반영
+      };
+      wrap.appendChild(row);
+    });
+    detailBody.appendChild(wrap);
+  }
+
+  showList();
+}
+
+const MCP_ICON =
+  '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M12 8v8"/></svg>';
+
+// MCP 탭: 편집=이 워크스테이션의 .mcp.json mcpServers 목록/편집, 디테일=저장소에서 복사.
+// 서브 에이전트 탭과 동일한 흐름. 서버 하나 = 한 항목(이름=맵 키)이라 저장/삭제는 서버 단위.
+async function renderProjectMcp(ws) {
+  editBody.innerHTML = "";
+  detailBody.innerHTML = "";
+  if (!ws) {
+    editBody.innerHTML = '<p class="empty">워크스테이션을 선택하세요.</p>';
+    return;
+  }
+  let servers = await invoke("list_project_mcp", { workstation: ws.path }).catch(() => []);
+  const reload = async () => {
+    servers = await invoke("list_project_mcp", { workstation: ws.path }).catch(() => []);
+  };
+  const rowLabel = (m) => m.title + " · " + (m.transport || "stdio");
+
+  function showList() {
+    editBody.innerHTML = "";
+    if (servers.length === 0) {
+      editBody.innerHTML = '<p class="empty">로컬에 MCP 서버가 없습니다. 오른쪽에서 가져오세요.</p>';
+    } else {
+      const ul = document.createElement("div");
+      ul.className = "dirlist";
+      servers.forEach((m, i) => {
+        const pick = document.createElement("button");
+        pick.className = "dirrow pick";
+        pick.textContent = rowLabel(m);
+        pick.onclick = () => openMcp(i);
+        const del = document.createElement("button");
+        del.className = "btn dirrow-del";
+        del.textContent = "삭제";
+        del.onclick = async () => {
+          if (!confirm("‘" + m.title + "’ MCP 서버를 .mcp.json에서 삭제할까요?")) return;
+          await invoke("delete_project_mcp", { workstation: ws.path, title: m.title });
+          await reload();
+          showList();
+        };
+        const wrap = document.createElement("div");
+        wrap.className = "dirrow-row";
+        wrap.append(pick, del);
+        ul.appendChild(wrap);
+      });
+      editBody.appendChild(ul);
+    }
+    renderMcpDetail();
+  }
+
+  function openMcp(i) {
+    const orig = servers[i].title; // 이름이 바뀌면 저장 시 옛 키 삭제
+    const draft = { ...servers[i] }; // 저장 전까진 파일에 손대지 않음
+    editBody.innerHTML = "";
+    detailBody.innerHTML = ""; // 단일 편집 중엔 디테일 비움
+    const back = document.createElement("button");
+    back.className = "btn editor-back";
+    back.textContent = "← 목록";
+    back.onclick = showList;
+
+    const box = document.createElement("div");
+    box.className = "comp-edit";
+    box.style.padding = "10px";
+    mcpFormFields(box, draft, () => {});
+
+    const save = document.createElement("button");
+    save.className = "btn primary editor-save";
+    save.textContent = "저장";
+    save.onclick = async () => {
+      if (!draft.title.trim()) return alert("MCP 서버 이름을 입력하세요.");
+      try {
+        await invoke("save_project_mcp", { workstation: ws.path, mcp: draft, orig });
+      } catch (e) {
+        return alert("저장 실패: " + e);
+      }
+      await reload();
+      showList();
+    };
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "삭제";
+    del.onclick = async () => {
+      await invoke("delete_project_mcp", { workstation: ws.path, title: orig });
+      await reload();
+      showList();
+    };
+    const actions = document.createElement("div");
+    actions.className = "editor-actions";
+    actions.append(del, save);
+    editBody.append(back, box, actions);
+  }
+
+  // 디테일: 저장소(mcp.json)의 서버를 이 워크스테이션의 .mcp.json으로 복사.
+  async function renderMcpDetail() {
+    detailBody.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.padding = "12px";
+
+    const label = document.createElement("div");
+    label.className = "wsm-label";
+    label.style.marginBottom = "6px";
+    label.textContent = "저장소에서 가져오기";
+    const desc = document.createElement("p");
+    desc.className = "empty";
+    desc.style.margin = "0 0 10px";
+    desc.textContent = "정의해 둔 MCP 서버를 이 워크스테이션에 복사합니다. (.mcp.json)";
+    wrap.append(label, desc);
+
+    const repo = await invoke("list_mcp").catch(() => []);
+    if (repo.length === 0) {
+      const none = document.createElement("p");
+      none.className = "empty";
+      none.style.margin = "0";
+      none.textContent = "저장된 MCP 서버가 없습니다. 상단바 ‘MCP’에서 정의하세요.";
+      wrap.appendChild(none);
+    }
+    repo.forEach((r) => {
+      const row = document.createElement("button");
+      row.className = "listrow";
+      row.title = r.description || r.title;
+      row.innerHTML = MCP_ICON +
+        '<span class="lr-text"><span class="lr-name"></span><span class="lr-sub"></span></span>';
+      row.querySelector(".lr-name").textContent = r.title || "(이름 없음)";
+      row.querySelector(".lr-sub").textContent = r.description || (r.transport || "stdio");
+      row.onclick = async () => {
+        if (!r.title.trim()) return alert("저장소 서버에 이름이 없습니다. 상단바 ‘MCP’에서 이름을 지정하세요.");
+        try {
+          await invoke("save_project_mcp", { workstation: ws.path, mcp: r, orig: null });
+        } catch (e) {
+          return alert("복사 실패: " + e);
+        }
+        await reload();
+        showList(); // 왼쪽 목록에 즉시 반영
+      };
+      wrap.appendChild(row);
+    });
+    detailBody.appendChild(wrap);
+  }
+
+  showList();
+}
+
 // 메모리 탭 디테일: 자동 메모리 위치 토글(기존 ↔ 여기) + 기존 메모리 복사.
 async function renderMemoryDetail(ws, refreshList) {
   detailBody.innerHTML = "";
@@ -662,6 +965,42 @@ document.getElementById("hook-toggle").onclick = async () => {
   new WebviewWindow("hooks", {
     url: "hooks.html",
     title: "훅 관리",
+    width: 900,
+    height: 640,
+    minWidth: 560,
+    minHeight: 400,
+  });
+};
+
+// ── 서브 에이전트 관리 ────────────────────────────────
+// 커스텀 서브 에이전트를 컴포넌트/스킬처럼 관리하는 독립 창. (store.js 공유)
+document.getElementById("agent-toggle").onclick = async () => {
+  const existing = await WebviewWindow.getByLabel("subagents");
+  if (existing) {
+    await existing.setFocus();
+    return;
+  }
+  new WebviewWindow("subagents", {
+    url: "subagents.html",
+    title: "서브 에이전트 관리",
+    width: 900,
+    height: 640,
+    minWidth: 560,
+    minHeight: 400,
+  });
+};
+
+// ── MCP 관리 ─────────────────────────────────────────
+// 커스텀 MCP 서버 정의를 컴포넌트/스킬처럼 관리하는 독립 창. (store.js 공유)
+document.getElementById("mcp-toggle").onclick = async () => {
+  const existing = await WebviewWindow.getByLabel("mcp");
+  if (existing) {
+    await existing.setFocus();
+    return;
+  }
+  new WebviewWindow("mcp", {
+    url: "mcp.html",
+    title: "MCP 관리",
     width: 900,
     height: 640,
     minWidth: 560,

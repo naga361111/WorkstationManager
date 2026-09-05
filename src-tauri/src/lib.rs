@@ -1,7 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
+
+/// 저장소 파일들이 사는 data/ 폴더. setup()에서 app_data_dir 기준으로 한 번만 정한다.
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 #[tauri::command]
 fn read_file(path: &str) -> Result<String, String> {
@@ -53,16 +58,16 @@ struct Workstation {
     path: String,
 }
 
-/// 프로젝트 루트의 data/ 폴더에 있는 저장 파일 경로.
-// ponytail: 개발 기준 경로(CARGO_MANIFEST_DIR). 배포 앱으로 옮길 땐 app_data_dir로 교체.
+/// 저장소 파일 경로(app_data_dir/data 아래). DATA_DIR은 setup()에서 초기화된다.
 fn store_path(name: &str) -> Result<PathBuf, String> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("no project root")?
-        .to_path_buf();
-    let dir = root.join("data");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = DATA_DIR.get().ok_or("data dir not initialized")?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     Ok(dir.join(name))
+}
+
+/// 개발 시절 프로젝트 루트에 두던 data/ 경로(빌드 시점에 박힘). 배포 바이너리에선 존재하지 않아 이관이 no-op.
+fn legacy_data_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent()?.join("data"))
 }
 
 #[tauri::command]
@@ -162,6 +167,282 @@ fn list_slashcommands() -> Result<Vec<SlashCommand>, String> {
 fn save_slashcommands(slashcommands: Vec<SlashCommand>) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&slashcommands).map_err(|e| e.to_string())?;
     fs::write(store_path("slashcommands.json")?, json).map_err(|e| e.to_string())
+}
+
+/// 서브 에이전트 = 커스텀 에이전트 정의(.claude/agents/<이름>.md). title=name, content=시스템 프롬프트.
+/// tools/model 은 프론트매터로 나갈 선택 필드. 빈 필드는 #[serde(default)] 로 구버전 호환.
+#[derive(Serialize, Deserialize, Clone)]
+struct Subagent {
+    title: String,
+    description: String,
+    #[serde(default)]
+    tools: String,
+    #[serde(default)]
+    model: String,
+    content: String,
+}
+
+#[tauri::command]
+fn list_subagents() -> Result<Vec<Subagent>, String> {
+    match fs::read_to_string(store_path("subagents.json")?) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        Err(_) => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn save_subagents(subagents: Vec<Subagent>) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&subagents).map_err(|e| e.to_string())?;
+    fs::write(store_path("subagents.json")?, json).map_err(|e| e.to_string())
+}
+
+/// MCP 서버 = 커스텀 MCP 서버 정의 저장소. title=서버 이름, content=args(한 줄에 하나).
+/// transport/command/url/env 는 선택 필드. 빈 필드는 #[serde(default)] 로 구버전 호환.
+#[derive(Serialize, Deserialize, Clone)]
+struct Mcp {
+    title: String,
+    description: String,
+    #[serde(default)]
+    transport: String,
+    #[serde(default)]
+    command: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    env: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[tauri::command]
+fn list_mcp() -> Result<Vec<Mcp>, String> {
+    match fs::read_to_string(store_path("mcp.json")?) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        Err(_) => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+fn save_mcp(mcp: Vec<Mcp>) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&mcp).map_err(|e| e.to_string())?;
+    fs::write(store_path("mcp.json")?, json).map_err(|e| e.to_string())
+}
+
+// ── 프로젝트(로컬) MCP 서버 ──────────────────────────
+// 워크스테이션의 .mcp.json(프로젝트 스코프, Claude가 읽는 파일)의 mcpServers 맵을 다룬다.
+// 서버 하나 = 한 항목(이름=맵 키). 다른 서버/다른 키는 보존한다.
+
+fn mcp_json_path(workstation: &str) -> PathBuf {
+    PathBuf::from(workstation).join(".mcp.json")
+}
+
+/// .mcp.json 서버 객체 하나를 편집용 평면 Mcp로. description은 .mcp.json 스펙에 없어 빈 값.
+fn parse_mcp_server(name: &str, obj: &serde_json::Value) -> Mcp {
+    let s = |k: &str| obj.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let args = obj.get("args").and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    let env = obj.get("env").and_then(|x| x.as_object())
+        .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}")))
+            .collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    let t = s("type");
+    Mcp {
+        title: name.to_string(),
+        description: String::new(),
+        transport: if t.is_empty() { "stdio".into() } else { t },
+        command: s("command"),
+        url: s("url"),
+        env,
+        content: args,
+    }
+}
+
+/// 평면 Mcp를 .mcp.json 서버 객체로. transport에 따라 stdio=command/args/env, http/sse=url.
+fn render_mcp_server(m: &Mcp) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    let transport = if m.transport.trim().is_empty() { "stdio" } else { m.transport.trim() };
+    obj.insert("type".into(), serde_json::json!(transport));
+    if transport == "stdio" {
+        obj.insert("command".into(), serde_json::json!(m.command.trim()));
+        let args: Vec<&str> = m.content.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        if !args.is_empty() {
+            obj.insert("args".into(), serde_json::json!(args));
+        }
+        let env: serde_json::Map<String, serde_json::Value> = m.env.lines()
+            .filter_map(|l| l.split_once('=').map(|(k, v)| (k.trim().to_string(), serde_json::json!(v.trim()))))
+            .collect();
+        if !env.is_empty() {
+            obj.insert("env".into(), serde_json::Value::Object(env));
+        }
+    } else {
+        obj.insert("url".into(), serde_json::json!(m.url.trim()));
+    }
+    serde_json::Value::Object(obj)
+}
+
+#[tauri::command]
+fn list_project_mcp(workstation: &str) -> Result<Vec<Mcp>, String> {
+    let v: serde_json::Value = fs::read_to_string(mcp_json_path(workstation))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut out = vec![];
+    if let Some(servers) = v.get("mcpServers").and_then(|x| x.as_object()) {
+        for (name, obj) in servers {
+            out.push(parse_mcp_server(name, obj));
+        }
+    }
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(out)
+}
+
+/// 서버 하나를 <ws>/.mcp.json 의 mcpServers에 upsert. orig가 다르면(이름 변경) 옛 키 삭제. 다른 키 보존.
+#[tauri::command]
+fn save_project_mcp(workstation: &str, mcp: Mcp, orig: Option<String>) -> Result<(), String> {
+    let name = mcp.title.trim();
+    if name.is_empty() {
+        return Err("MCP 서버 이름이 필요합니다.".into());
+    }
+    let path = mcp_json_path(workstation);
+    let mut v: serde_json::Value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    let root = v.as_object_mut().unwrap();
+    let servers = root.entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+    if !servers.is_object() {
+        *servers = serde_json::json!({});
+    }
+    let map = servers.as_object_mut().unwrap();
+    if let Some(orig) = orig {
+        if !orig.is_empty() && orig != name {
+            map.remove(&orig);
+        }
+    }
+    map.insert(name.to_string(), render_mcp_server(&mcp));
+    let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_project_mcp(workstation: &str, title: &str) -> Result<(), String> {
+    let path = mcp_json_path(workstation);
+    let Some(mut v) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    else {
+        return Ok(());
+    };
+    if let Some(map) = v.get_mut("mcpServers").and_then(|x| x.as_object_mut()) {
+        map.remove(title);
+    }
+    let json = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ── 프로젝트(로컬) 서브 에이전트 ─────────────────────
+// 워크스테이션의 .claude/agents/<이름>.md 를 편집 가능한 Subagent 목록으로 다룬다.
+// 파일명(확장자 제외)=title, 프론트매터 name/description/tools/model, 나머지=시스템 프롬프트.
+// 슬래시 커맨드 탭과 동일한 흐름(파일 하나 = 한 항목).
+
+fn agents_dir(workstation: &str) -> PathBuf {
+    PathBuf::from(workstation).join(".claude").join("agents")
+}
+
+/// .md 텍스트를 Subagent로 파싱. "---"로 감싼 프론트매터의 알려진 키만 읽는다.
+/// name이 있으면 그걸 title로, 없으면 파일명(fallback)을 쓴다.
+fn parse_agent_md(fallback_title: &str, text: &str) -> Subagent {
+    let mut a = Subagent {
+        title: fallback_title.to_string(),
+        description: String::new(),
+        tools: String::new(),
+        model: String::new(),
+        content: text.to_string(),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.first().map(|l| l.trim_end()) == Some("---") {
+        if let Some(rel) = lines.iter().skip(1).position(|l| l.trim_end() == "---") {
+            let end = rel + 1; // 닫는 "---" 의 실제 인덱스
+            for line in &lines[1..end] {
+                if let Some((k, v)) = line.split_once(':') {
+                    let v = v.trim().to_string();
+                    match k.trim() {
+                        "name" => a.title = v,
+                        "description" => a.description = v,
+                        "tools" => a.tools = v,
+                        "model" => a.model = v,
+                        _ => {}
+                    }
+                }
+            }
+            a.content = lines[end + 1..].join("\n").trim_start().to_string();
+        }
+    }
+    a
+}
+
+/// Subagent를 .md 텍스트로. name/description은 서브 에이전트 필수라 항상 넣고, tools/model은 비면 생략.
+fn render_agent_md(a: &Subagent) -> String {
+    let mut fm = format!("name: {}\ndescription: {}\n", a.title, a.description);
+    if !a.tools.trim().is_empty() {
+        fm.push_str(&format!("tools: {}\n", a.tools));
+    }
+    if !a.model.trim().is_empty() {
+        fm.push_str(&format!("model: {}\n", a.model));
+    }
+    format!("---\n{fm}---\n\n{}", a.content)
+}
+
+#[tauri::command]
+fn list_project_subagents(workstation: &str) -> Result<Vec<Subagent>, String> {
+    let dir = agents_dir(workstation);
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut out = vec![];
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let title = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            out.push(parse_agent_md(&title, &text));
+        }
+    }
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    Ok(out)
+}
+
+/// 에이전트 하나를 <ws>/.claude/agents/<title>.md 로 저장. orig가 다르면(이름 변경) 옛 파일 삭제.
+#[tauri::command]
+fn save_project_subagent(workstation: &str, subagent: Subagent, orig: Option<String>) -> Result<(), String> {
+    let title = subagent.title.trim();
+    if title.is_empty() {
+        return Err("에이전트 이름이 필요합니다.".into());
+    }
+    if title.contains(['/', '\\']) {
+        return Err("에이전트 이름에 경로 구분자(/ \\)를 쓸 수 없습니다.".into());
+    }
+    let dir = agents_dir(workstation);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if let Some(orig) = orig {
+        if !orig.is_empty() && orig != title {
+            let _ = fs::remove_file(dir.join(format!("{orig}.md")));
+        }
+    }
+    fs::write(dir.join(format!("{title}.md")), render_agent_md(&subagent)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_project_subagent(workstation: &str, title: &str) -> Result<(), String> {
+    let path = agents_dir(workstation).join(format!("{title}.md"));
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ── 프로젝트(로컬) 슬래시 커맨드 ─────────────────────
@@ -667,6 +948,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // 저장소는 app_data_dir/data 에 둔다(설치 앱의 exe 폴더는 쓰기 불가라 밖으로 뺀다).
+            let dir = app.path().app_data_dir().expect("no app data dir").join("data");
+            // 최초 실행 이관: 새 위치가 비어 있고 개발용 data/가 있으면 파일들을 한 번 옮긴다.
+            // 배포 바이너리에선 legacy 경로가 없어 자동으로 건너뛴다.
+            if !dir.exists() {
+                if let Some(legacy) = legacy_data_dir() {
+                    let _ = copy_files(&legacy, &dir);
+                }
+            }
+            DATA_DIR.set(dir).ok();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             read_file,
             write_file,
@@ -683,6 +977,16 @@ pub fn run() {
             save_skills,
             list_slashcommands,
             save_slashcommands,
+            list_subagents,
+            save_subagents,
+            list_mcp,
+            save_mcp,
+            list_project_mcp,
+            save_project_mcp,
+            delete_project_mcp,
+            list_project_subagents,
+            save_project_subagent,
+            delete_project_subagent,
             list_project_slashcommands,
             save_project_slashcommand,
             delete_project_slashcommand,
@@ -716,6 +1020,52 @@ mod tests {
         assert_eq!(read_file(path).unwrap(), "hello");
         assert!(read_file("no/such/file/here.txt").is_err());
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn project_mcp_roundtrip() {
+        let ws = std::env::temp_dir().join("ws_mcp_test");
+        fs::remove_dir_all(&ws).ok();
+        fs::create_dir_all(&ws).unwrap();
+        let ws_str = ws.to_str().unwrap();
+        // 기존 파일에 무관한 키가 있어도 보존되는지 확인
+        fs::write(ws.join(".mcp.json"), r#"{"other":1}"#).unwrap();
+
+        let stdio = Mcp {
+            title: "test".into(), description: "d".into(), transport: "stdio".into(),
+            command: "npx".into(), url: "".into(), env: "K=V".into(),
+            content: "-y\n@scope/pkg".into(),
+        };
+        let http = Mcp {
+            title: "remote".into(), description: "".into(), transport: "http".into(),
+            command: "".into(), url: "https://x/mcp".into(), env: "".into(), content: "".into(),
+        };
+        save_project_mcp(ws_str, stdio, None).unwrap();
+        save_project_mcp(ws_str, http, None).unwrap();
+
+        let list = list_project_mcp(ws_str).unwrap();
+        assert_eq!(list.len(), 2);
+        let t = list.iter().find(|m| m.title == "test").unwrap();
+        assert_eq!(t.command, "npx");
+        assert_eq!(t.content, "-y\n@scope/pkg"); // args 라운드트립
+        assert_eq!(t.env, "K=V");
+        let r = list.iter().find(|m| m.title == "remote").unwrap();
+        assert_eq!(r.url, "https://x/mcp");
+        assert_eq!(r.transport, "http");
+
+        // 무관한 키 보존
+        let raw = fs::read_to_string(ws.join(".mcp.json")).unwrap();
+        assert!(raw.contains("\"other\""));
+
+        // 이름 변경(orig 삭제) + 삭제
+        let renamed = Mcp { title: "test2".into(), ..list.iter().find(|m| m.title == "test").unwrap().clone() };
+        save_project_mcp(ws_str, renamed, Some("test".into())).unwrap();
+        delete_project_mcp(ws_str, "remote").unwrap();
+        let after = list_project_mcp(ws_str).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].title, "test2");
+
+        fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
@@ -784,6 +1134,35 @@ mod tests {
         assert_eq!(back[0].command, "a");
         assert_eq!(back[0].timeout, Some(30));
         assert_eq!(back[2].matcher, ""); // 없음 → 빈 문자열
+    }
+
+    #[test]
+    fn agent_md_roundtrip() {
+        let a = Subagent {
+            title: "code-reviewer".into(),
+            description: "리뷰할 때 사용".into(),
+            tools: "Read, Grep".into(),
+            model: "sonnet".into(),
+            content: "당신은 시니어 리뷰어입니다.".into(),
+        };
+        let md = render_agent_md(&a);
+        assert!(md.starts_with("---\nname: code-reviewer\ndescription: 리뷰할 때 사용\n"));
+        // 파싱하면 필드가 보존된다(파일명 fallback은 name이 있으므로 무시).
+        let back = parse_agent_md("wrong-name", &md);
+        assert_eq!(back.title, "code-reviewer");
+        assert_eq!(back.description, "리뷰할 때 사용");
+        assert_eq!(back.tools, "Read, Grep");
+        assert_eq!(back.model, "sonnet");
+        assert_eq!(back.content, "당신은 시니어 리뷰어입니다.");
+
+        // tools/model 비면 프론트매터에서 생략, name 없으면 파일명 fallback.
+        let bare = Subagent { tools: "".into(), model: "".into(), ..a };
+        let md2 = render_agent_md(&bare);
+        assert!(!md2.contains("tools:"));
+        assert!(!md2.contains("model:"));
+        let plain = parse_agent_md("from-filename", "그냥 본문, 프론트매터 없음");
+        assert_eq!(plain.title, "from-filename");
+        assert_eq!(plain.content, "그냥 본문, 프론트매터 없음");
     }
 
     #[test]

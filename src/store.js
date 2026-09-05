@@ -1,6 +1,6 @@
 // 제목+설명+내용 목록을 CRUD하는 독립 저장소 창. 컴포넌트/스킬이 공유한다.
 // 어떤 저장소인지는 <body data-store="components|skills"> 로 정한다. 목록 전체를 통째로 저장한다.
-import { frontmatterFields } from "./cmdform.js";
+import { frontmatterFields, subagentFields, mcpFields } from "./cmdform.js";
 const { invoke } = window.__TAURI__.core;
 const { emit } = window.__TAURI__.event;
 
@@ -14,6 +14,16 @@ const CONFIG = {
     labels: { title: "커맨드 이름 (파일명 → /이름)", description: "설명 (description)", content: "본문 (프롬프트)" },
     // 프론트매터로 나갈 선택 필드. renderEdit가 설명과 본문 사이에 끼워 넣는다.
     extra: frontmatterFields,
+  },
+  subagents: { list: "list_subagents", save: "save_subagents", event: "subagents-changed",
+    add: "서브 에이전트 추가", empty: "왼쪽에서 서브 에이전트를 선택하거나 추가하세요.",
+    labels: { title: "이름 (name)", description: "설명 (description → 자동 위임 근거)", content: "시스템 프롬프트" },
+    extra: subagentFields,
+  },
+  mcp: { list: "list_mcp", save: "save_mcp", event: "mcp-changed",
+    add: "MCP 서버 추가", empty: "왼쪽에서 MCP 서버를 선택하거나 추가하세요.",
+    labels: { title: "이름 (서버 이름)", description: "설명", content: "인자 (args · 한 줄에 하나)" },
+    extra: mcpFields,
   },
 };
 const cfg = CONFIG[document.body.dataset.store];
