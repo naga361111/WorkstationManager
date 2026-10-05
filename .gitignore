@@ -25,8 +25,7 @@ Cargo.lock.orig
 /src-tauri/gen/schemas/
 **/gen/schemas/
 
-# Claude Code (personal auto-memory + local settings)
-/memory/
+# Claude Code (local settings)
 .claude/settings.local.json
 
 # Environment variables & secrets

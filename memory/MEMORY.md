@@ -1,0 +1,3 @@
+- [WSM Design System](wsm-design-system.md) — the Workstation app follows @wsm/ui (claude.ai/design); tokens/idiom + why adopted by hand
+- [User speaks Korean](user-language-korean.md) — default to replying in Korean
+- [Auto-mode workflow](user-workflow-auto-mode.md) — plans first, then runs Claude in auto-accept; rank deny-rules + hooks above allow-list convenience
